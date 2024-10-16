@@ -1,0 +1,7 @@
+streamlit
+openai
+sentence-transformers
+pinecone-client
+pandas
+matplotlib
+python-dotenv
