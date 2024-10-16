@@ -16,6 +16,8 @@ PINECONE_API_KEY=your_pinecone_api_key_here
 PINECONE_ENVIRONMENT=your_pinecone_environment_here
 HUGGINGFACE_TOKEN=your_huggingface_api_here
 ALPHA_VANTAGE_API_KEY=your_alpha_api_here
+HUGGINGFACE_TOKEN=your_huggingface_api_here
+ALPHA_VANTAGE_API_KEY=your_alpha_api_here
 
 4. Download NLTK data:
 Run this script once:
