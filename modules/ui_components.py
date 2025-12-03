@@ -29,6 +29,7 @@ def display_navigation():
         "📈 Metric Tracking",
         "💼 Company Analysis",
         "📊 Auto-Adaptive Business Strategy Maps",
+        "💸 Revenue Leakage Analysis",
         "💬 Feedback"
     ]
 
