@@ -12,6 +12,7 @@ from modules.business_data_handler import DataAnalyzer
 from modules.metric_tracker import MetricTracker
 from modules.financial_data_handler import FinancialDataHandler
 from modules.strategy_map import StrategyMap
+from modules.revenue_leakage_detector import RevenueLeakageDetector
 
 
 llm = LLMInterface()
@@ -97,14 +98,27 @@ def main():
            - **🔍 Scenario Planning**: Compare different strategic options to determine the best course of action.
            - **Ask**: "What if we increase our advertising spend by 20% next quarter?"
 
-        8. **📈 Metric Tracking**  
-           **Overview**: Track and forecast business metrics, detect anomalies, and set performance alerts.  
-           **Sub-features**:  
+        8. **📈 Metric Tracking**
+           **Overview**: Track and forecast business metrics, detect anomalies, and set performance alerts.
+           **Sub-features**:
            - **🔮 Predictive Analytics**: Forecast future performance for key metrics like sales, customer growth, or market trends.
            - **🔍 Correlation Analysis**: Discover correlations between business metrics, such as the link between marketing spend and sales.
            - **🚨 Anomaly Detection**: Identify unusual spikes or drops in your business metrics and receive automatic alerts.
 
-        9. **📝 Feedback**  
+        9. **💸 Revenue Leakage Analysis** *(NEW!)*
+           **Overview**: Identify and forecast revenue leakages across your business operations with advanced AI-powered analysis.
+           **Sub-features**:
+           - **📊 Executive Dashboard**: Get a comprehensive overview of total revenue leakage, potential savings, and key metrics at a glance.
+           - **💰 Discount Analysis**: Identify excessive discounting patterns and their impact on profitability across products and categories.
+           - **📉 Profit Erosion Detection**: Track profit margin trends over time and identify categories with declining profitability.
+           - **📦 Product Performance**: Analyze underperforming products and categories, identifying which ones are causing revenue leakage.
+           - **🌍 Regional Analysis**: Discover regional performance issues and identify geographic areas with revenue leakage problems.
+           - **🔮 AI Forecasting**: Use machine learning models to forecast future revenue leakage trends and take preventive action.
+           - **📈 Anomaly Detection**: Automatically detect anomalous transactions that indicate potential revenue leakage.
+           - **🤖 AI Recommendations**: Receive comprehensive, actionable recommendations to reduce revenue leakage and improve profitability.
+           - **Ask**: "Where is my business losing money?" or "How can I reduce revenue leakage?"
+
+        10. **📝 Feedback**
            **Overview**: Provide feedback on the AI-generated insights and application performance.  
            **Sub-features**:  
            - **👍 User Feedback Form**: Share your thoughts, rate the AI insights, and suggest improvements.
@@ -217,6 +231,32 @@ def main():
 
             else:
                 st.error("No valid companies found with the provided names. Please check and try again.")
+
+    elif page_to_display == "💸 Revenue Leakage Analysis":
+        st.header("AI-Powered Revenue Leakage Detection & Forecasting")
+        st.markdown("""
+        This advanced analysis identifies revenue leakages across your business operations,
+        forecasts future trends, and provides actionable recommendations to improve profitability.
+        """)
+
+        if st.session_state.uploaded_data is not None:
+            try:
+                revenue_detector = RevenueLeakageDetector(st.session_state.uploaded_data, llm)
+                revenue_detector.detect_leakages()
+            except Exception as e:
+                st.error(f"Error in revenue leakage analysis: {str(e)}")
+                st.info("Please ensure your dataset contains columns like 'Sales', 'Profit', 'Discount', etc.")
+        else:
+            st.warning("⚠️ Please upload a dataset in the Q&A System page to analyze revenue leakages.")
+            st.info("""
+            **Required Dataset Columns:**
+            - Sales (revenue data)
+            - Profit (profit data)
+            - Discount (discount rates, optional)
+            - Order Date (for time-series analysis, optional)
+            - Category/Product information (optional)
+            - Region/Location information (optional)
+            """)
 
     elif page_to_display == "💬 Feedback":
         st.header("Feedback")
