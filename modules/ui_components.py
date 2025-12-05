@@ -30,6 +30,7 @@ def display_navigation():
         "💼 Company Analysis",
         "📊 Auto-Adaptive Business Strategy Maps",
         "💸 Revenue Leakage Analysis",
+        "🔧 IFB Service Forecasting",
         "💬 Feedback"
     ]
 
