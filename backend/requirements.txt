@@ -1,0 +1,41 @@
+# FastAPI and Web Framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# Database
+sqlalchemy==2.0.23
+alembic==1.12.1
+psycopg2-binary==2.9.9
+
+# Data Processing & ML
+pandas==2.1.3
+numpy==1.26.2
+scikit-learn==1.3.2
+scipy==1.11.4
+
+# Visualization (for generating charts as base64)
+plotly==5.18.0
+matplotlib==3.8.2
+
+# AI/LLM Integration
+openai==1.3.7
+python-dotenv==1.0.0
+
+# API utilities
+python-multipart==0.0.6
+aiofiles==23.2.1
+
+# CORS
+python-cors==1.0.0
+
+# Date handling
+python-dateutil==2.8.2
+
+# Job scheduling (for periodic model retraining)
+apscheduler==3.10.4
+
+# Testing
+pytest==7.4.3
+httpx==0.25.2
