@@ -1,0 +1,13 @@
+streamlit
+openai
+sentence-transformers
+pinecone-client
+pandas
+matplotlib
+seaborn
+plotly
+python-dotenv
+scikit-learn
+yfinance
+nltk
+scipy
