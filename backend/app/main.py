@@ -10,7 +10,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from app.config import settings
-from app.api import forecasting, analytics, franchise, inventory
+from app.api import forecasting, analytics, franchise, inventory, data
 from app.database import engine, Base
 
 # Configure logging
@@ -128,6 +128,12 @@ app.include_router(
     inventory.router,
     prefix="/api/v1/inventory",
     tags=["Inventory"]
+)
+
+app.include_router(
+    data.router,
+    prefix="/api/v1/data",
+    tags=["Data Management"]
 )
 
 

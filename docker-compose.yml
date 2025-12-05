@@ -3,36 +3,35 @@ version: '3.8'
 services:
   backend:
     build: ./backend
+    container_name: ifb-backend
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://ifb_user:ifb_password@db:5432/ifb_service
+      - DATABASE_URL=sqlite:///./ifb_service.db
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DEBUG=True
+      - CORS_ORIGINS=["http://localhost:3000","http://frontend:3000"]
     volumes:
       - ./backend/app:/app/app
       - ./data:/app/data
-    depends_on:
-      - db
-
-  db:
-    image: postgres:15-alpine
-    environment:
-      - POSTGRES_USER=ifb_user
-      - POSTGRES_PASSWORD=ifb_password
-      - POSTGRES_DB=ifb_service
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
+    networks:
+      - ifb-network
 
   frontend:
     build: ./frontend
+    container_name: ifb-frontend
     ports:
       - "3000:3000"
+    environment:
+      - VITE_API_URL=http://localhost:8000/api/v1
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
     depends_on:
       - backend
-    environment:
-      - REACT_APP_API_URL=http://localhost:8000
+    networks:
+      - ifb-network
 
-volumes:
-  postgres_data:
+networks:
+  ifb-network:
+    driver: bridge
