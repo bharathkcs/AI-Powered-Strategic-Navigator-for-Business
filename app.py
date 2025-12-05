@@ -13,6 +13,7 @@ from modules.metric_tracker import MetricTracker
 from modules.financial_data_handler import FinancialDataHandler
 from modules.strategy_map import StrategyMap
 from modules.revenue_leakage_detector import RevenueLeakageDetector
+from modules.ifb_service_forecasting import IFBServiceForecasting
 
 
 llm = LLMInterface()
@@ -256,6 +257,83 @@ def main():
             - Order Date (for time-series analysis, optional)
             - Category/Product information (optional)
             - Region/Location information (optional)
+            """)
+
+    elif page_to_display == "🔧 IFB Service Forecasting":
+        st.header("🔧 IFB Service Ecosystem - AI Forecasting & Analytics")
+        st.markdown("""
+        **Advanced forecasting and analytics for IFB's nationwide service network**
+
+        This module provides comprehensive 30/60/90-day demand forecasting, inventory optimization,
+        franchise performance tracking, and revenue optimization for service operations.
+        """)
+
+        # Option to load sample IFB data or use uploaded data
+        use_sample_data = st.checkbox("Load IFB Sample Service Data", value=False,
+                                      help="Use pre-loaded IFB service ecosystem sample data")
+
+        if use_sample_data:
+            try:
+                ifb_data = pd.read_csv('data/ifb_service_data.csv')
+                st.success(f"✅ Loaded IFB sample data: {len(ifb_data)} service records")
+                st.info(f"📅 Date range: {ifb_data['Service_Date'].min()} to {ifb_data['Service_Date'].max()}")
+
+                # Initialize and run IFB forecasting system
+                ifb_system = IFBServiceForecasting(ifb_data, llm)
+                ifb_system.run_analysis()
+
+            except FileNotFoundError:
+                st.error("Sample data file not found. Please run: python generate_ifb_sample_data.py")
+            except Exception as e:
+                st.error(f"Error loading sample data: {str(e)}")
+
+        elif st.session_state.uploaded_data is not None:
+            st.info("Using your uploaded dataset for IFB service analysis")
+
+            # Check if the data has service-related columns
+            required_cols_check = any(col in st.session_state.uploaded_data.columns
+                                     for col in ['Service_ID', 'Service_Revenue', 'Service_Type'])
+
+            if required_cols_check:
+                try:
+                    ifb_system = IFBServiceForecasting(st.session_state.uploaded_data, llm)
+                    ifb_system.run_analysis()
+                except Exception as e:
+                    st.error(f"Error in IFB service analysis: {str(e)}")
+            else:
+                st.warning("""
+                Your dataset doesn't appear to have service-related columns.
+
+                **Expected columns for IFB Service Analysis:**
+                - Service_ID, Service_Date, Service_Revenue
+                - Location, Branch, Region, Franchise_ID
+                - Product_Category, Service_Type
+                - Parts_Used, Parts_Cost, Parts_Revenue
+                - Warranty_Claim, Technician_ID
+                - Customer_Satisfaction, Service_Duration
+
+                Try loading the IFB sample data using the checkbox above.
+                """)
+        else:
+            st.warning("⚠️ No data loaded")
+            st.info("""
+            **Choose one option:**
+
+            1. ✅ **Check the box above** to load IFB sample service data (recommended for demo)
+
+            2. **Upload your own service data** in the Q&A System page with these columns:
+               - Service_ID, Service_Date, Service_Revenue
+               - Location, Region, Franchise_ID
+               - Product_Category, Service_Type
+               - Parts information, Warranty data
+               - Customer metrics
+
+            **Sample Data Includes:**
+            - 5,000+ service records
+            - 20 locations across India
+            - 11 franchise partners
+            - Multiple product categories
+            - Complete service lifecycle data
             """)
 
     elif page_to_display == "💬 Feedback":
