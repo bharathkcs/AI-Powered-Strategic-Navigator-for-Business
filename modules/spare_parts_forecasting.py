@@ -113,6 +113,12 @@ class SparePartsForecastingEngine:
         self.join_loss_percentage: float = 0.0
         self.data_quality_stats: Dict[str, Any] = {}
 
+        # Decision Intelligence outputs
+        self.executive_insights: Optional[Dict[str, Any]] = None
+        self.demand_insights: Optional[pd.DataFrame] = None
+        self.leakage_insights: Optional[pd.DataFrame] = None
+        self.spare_part_narratives: Optional[List[str]] = None
+
     # ----------------------------
     # Loading
     # ----------------------------
@@ -896,6 +902,499 @@ class SparePartsForecastingEngine:
         return branch_leakage, franchise_leakage, high_risk_spares
 
     # ----------------------------
+    # Decision Intelligence Layer
+    # ----------------------------
+    def generate_executive_insights(self) -> Dict[str, Any]:
+        """
+        Generate executive-level insights for CXO consumption.
+
+        Returns comprehensive system health assessment based on:
+        - Join loss percentage
+        - Data quality metrics
+        - Forecast confidence
+        - Revenue leakage patterns
+        """
+        logger.info("Generating executive insights...")
+
+        if self.normalized_clean_data is None:
+            raise ValueError("normalized_clean_data is None. Run full pipeline first.")
+
+        # Calculate data trust score (0-100)
+        total_records = len(self.normalized_clean_data)
+        clean_records = (self.normalized_clean_data["data_quality_flag"] == "clean").sum()
+        quality_rate = (clean_records / total_records * 100) if total_records > 0 else 0
+
+        # Factor in join loss
+        join_quality = 100 - self.join_loss_percentage
+        data_trust_score = int((quality_rate * 0.7 + join_quality * 0.3))
+
+        # Determine system health
+        if data_trust_score >= 80 and self.join_loss_percentage < 15:
+            system_health = "Healthy"
+        elif data_trust_score >= 60 and self.join_loss_percentage < 30:
+            system_health = "Warning"
+        else:
+            system_health = "Critical"
+
+        # Calculate forecast confidence based on CI width
+        if self.forecast_30_60_90 is not None and not self.forecast_30_60_90.empty:
+            avg_ci_width = (self.forecast_30_60_90["ci_upper"] - self.forecast_30_60_90["ci_lower"]).mean()
+            avg_forecast = self.forecast_30_60_90["forecast_demand"].mean()
+
+            if avg_forecast > 0:
+                ci_ratio = avg_ci_width / avg_forecast
+                if ci_ratio < 0.5:
+                    forecast_confidence = "High"
+                elif ci_ratio < 1.0:
+                    forecast_confidence = "Medium"
+                else:
+                    forecast_confidence = "Low"
+            else:
+                forecast_confidence = "Low"
+        else:
+            forecast_confidence = "Low"
+
+        # Identify top 3 risks
+        top_risks = []
+
+        if self.join_loss_percentage > 30:
+            top_risks.append(f"High data integration loss ({self.join_loss_percentage:.1f}%) indicates missing indent records for consumed parts")
+
+        if quality_rate < 70:
+            top_risks.append(f"Poor data quality ({quality_rate:.1f}% clean records) compromises forecast reliability")
+
+        if self.branch_leakage_summary is not None and not self.branch_leakage_summary.empty:
+            high_leakage_branches = (self.branch_leakage_summary["revenue_leakage_score"] > 0.5).sum()
+            if high_leakage_branches > 0:
+                top_risks.append(f"{high_leakage_branches} branches show severe revenue leakage (score > 0.5)")
+
+        if self.top_20_high_risk_spares is not None and not self.top_20_high_risk_spares.empty:
+            critical_spares = (self.top_20_high_risk_spares["risk_score"] > 0.6).sum()
+            if critical_spares > 0:
+                top_risks.append(f"{critical_spares} spare parts flagged as critical risk (score > 0.6)")
+
+        if forecast_confidence == "Low":
+            top_risks.append("Low forecast confidence due to wide confidence intervals or insufficient historical data")
+
+        # Limit to top 3 most critical
+        top_risks = top_risks[:3] if len(top_risks) >= 3 else top_risks
+        if not top_risks:
+            top_risks = ["No critical risks identified"]
+
+        # Identify top 3 actions
+        top_actions = []
+
+        if self.join_loss_percentage > 20:
+            top_actions.append("Implement mandatory indent creation for all spare part consumption events")
+
+        if quality_rate < 80:
+            missing_qty_count = (self.normalized_clean_data["data_quality_flag"] == "missing_quantity").sum()
+            if missing_qty_count > 0:
+                top_actions.append(f"Fix {missing_qty_count} AMC records with missing quantity data")
+
+        if self.branch_leakage_summary is not None and not self.branch_leakage_summary.empty:
+            worst_branch = self.branch_leakage_summary.iloc[0]
+            worst_branch_score = worst_branch["revenue_leakage_score"]
+            if worst_branch_score > 0.4:
+                branch_id = worst_branch[self.branch_leakage_summary.columns[0]]
+                dominant_driver = self._identify_dominant_driver(worst_branch)
+                top_actions.append(f"Audit branch {branch_id} for {dominant_driver} (leakage score: {worst_branch_score:.2f})")
+
+        if self.top_20_high_risk_spares is not None and not self.top_20_high_risk_spares.empty:
+            riskiest_spare = self.top_20_high_risk_spares.iloc[0]
+            spare_id = riskiest_spare[self.top_20_high_risk_spares.columns[0]]
+            top_actions.append(f"Review consumption patterns for spare {spare_id} (risk score: {riskiest_spare['risk_score']:.2f})")
+
+        # Limit to top 3
+        top_actions = top_actions[:3] if len(top_actions) >= 3 else top_actions
+        if not top_actions:
+            top_actions = ["Continue monitoring current operations"]
+
+        # Generate one-line CXO summary
+        cxo_summary = self._generate_cxo_summary(system_health, data_trust_score, top_risks)
+
+        insights = {
+            "system_health": system_health,
+            "top_3_risks": top_risks,
+            "top_3_actions": top_actions,
+            "forecast_confidence": forecast_confidence,
+            "data_trust_score": data_trust_score,
+            "one_line_cxo_summary": cxo_summary,
+        }
+
+        self.executive_insights = insights
+        logger.info("Executive insights generated successfully")
+        return insights
+
+    def _identify_dominant_driver(self, leakage_row: pd.Series) -> str:
+        """Identify dominant leakage driver from rates"""
+        drivers = {
+            "excess consumption": leakage_row.get("excess_consumption_rate", 0),
+            "repeat failures": leakage_row.get("repeat_failure_rate", 0),
+            "warranty abuse": leakage_row.get("warranty_rate", 0),
+            "stock mismatches": leakage_row.get("stock_mismatch_rate", 0),
+        }
+        dominant = max(drivers.items(), key=lambda x: x[1])
+        return dominant[0]
+
+    def _generate_cxo_summary(self, health: str, trust_score: int, risks: List[str]) -> str:
+        """Generate one-line executive summary"""
+        if health == "Healthy":
+            return f"Spare parts system is healthy with {trust_score}% data confidence; continue monitoring identified operational patterns"
+        elif health == "Warning":
+            return f"Spare parts system requires attention ({trust_score}% data confidence); {len(risks)} operational risks need immediate review"
+        else:
+            return f"Spare parts system is in critical state ({trust_score}% data confidence); urgent intervention required across {len(risks)} risk areas"
+
+    def generate_demand_insights(self) -> pd.DataFrame:
+        """
+        Enhance demand forecasts with actionable planning signals.
+
+        Adds business-meaningful columns:
+        - demand_signal: Rising/Stable/Declining
+        - planning_action: Increase Stock/Maintain/Reduce
+        - forecast_confidence: High/Medium/Low
+        - reason: Plain English explanation
+        """
+        logger.info("Generating demand insights...")
+
+        if self.forecast_30_60_90 is None or self.forecast_30_60_90.empty:
+            logger.warning("No forecasts available. Returning empty demand insights.")
+            self.demand_insights = pd.DataFrame()
+            return self.demand_insights
+
+        df = self.forecast_30_60_90.copy()
+
+        # Demand signal: compare forecast to historical average
+        df["demand_signal"] = df.apply(
+            lambda row: self._classify_demand_signal(
+                row["forecast_demand"],
+                row["historical_avg_demand"]
+            ),
+            axis=1
+        )
+
+        # Forecast confidence based on CI width
+        df["ci_width"] = df["ci_upper"] - df["ci_lower"]
+        df["forecast_confidence"] = df.apply(
+            lambda row: self._classify_forecast_confidence(
+                row["ci_width"],
+                row["forecast_demand"]
+            ),
+            axis=1
+        )
+
+        # Planning action based on signal + confidence
+        df["planning_action"] = df.apply(
+            lambda row: self._determine_planning_action(
+                row["demand_signal"],
+                row["forecast_confidence"]
+            ),
+            axis=1
+        )
+
+        # Reason (plain English)
+        df["reason"] = df.apply(
+            lambda row: self._generate_demand_reason(
+                row["part_id"],
+                row["forecast_demand"],
+                row["historical_avg_demand"],
+                row["historical_std_demand"],
+                row["demand_signal"],
+                row["forecast_confidence"]
+            ),
+            axis=1
+        )
+
+        self.demand_insights = df
+        logger.info("Demand insights generated successfully")
+        return df
+
+    def _classify_demand_signal(self, forecast: float, historical_avg: float) -> str:
+        """Classify demand trend"""
+        if historical_avg == 0:
+            return "Stable"
+
+        change_pct = (forecast - historical_avg) / historical_avg
+
+        if change_pct > 0.2:
+            return "Rising"
+        elif change_pct < -0.2:
+            return "Declining"
+        else:
+            return "Stable"
+
+    def _classify_forecast_confidence(self, ci_width: float, forecast: float) -> str:
+        """Classify forecast confidence based on CI width"""
+        if forecast == 0:
+            return "Low"
+
+        ci_ratio = ci_width / forecast
+
+        if ci_ratio < 0.5:
+            return "High"
+        elif ci_ratio < 1.0:
+            return "Medium"
+        else:
+            return "Low"
+
+    def _determine_planning_action(self, signal: str, confidence: str) -> str:
+        """Determine planning action based on signal and confidence"""
+        if signal == "Rising" and confidence in ["High", "Medium"]:
+            return "Increase Stock"
+        elif signal == "Declining" and confidence in ["High", "Medium"]:
+            return "Reduce"
+        elif signal == "Stable":
+            return "Maintain"
+        else:
+            return "Monitor Closely"
+
+    def _generate_demand_reason(
+        self,
+        part_id: str,
+        forecast: float,
+        hist_avg: float,
+        hist_std: float,
+        signal: str,
+        confidence: str
+    ) -> str:
+        """Generate plain English explanation for demand forecast"""
+        if hist_avg == 0:
+            return f"Part {part_id} shows forecasted demand of {forecast:.1f} units with no historical baseline"
+
+        change_pct = ((forecast - hist_avg) / hist_avg) * 100
+        volatility = (hist_std / hist_avg) if hist_avg > 0 else 0
+
+        if signal == "Rising":
+            vol_desc = "high volatility" if volatility > 0.5 else "stable historical pattern"
+            return f"Demand increasing by {abs(change_pct):.1f}% from historical average ({hist_avg:.1f} units); {vol_desc} suggests {confidence.lower()} confidence"
+
+        elif signal == "Declining":
+            vol_desc = "high volatility" if volatility > 0.5 else "consistent historical pattern"
+            return f"Demand declining by {abs(change_pct):.1f}% from historical average ({hist_avg:.1f} units); {vol_desc} indicates {confidence.lower()} confidence"
+
+        else:
+            vol_desc = "low volatility" if volatility < 0.3 else "moderate volatility"
+            return f"Demand stable around {forecast:.1f} units (historical: {hist_avg:.1f}); {vol_desc} provides {confidence.lower()} confidence"
+
+    def generate_leakage_insights(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Add explanatory insights to revenue leakage summaries.
+
+        Adds columns:
+        - dominant_leakage_driver
+        - secondary_driver
+        - root_cause_explanation
+        - recommended_fix
+        """
+        logger.info("Generating leakage insights...")
+
+        branch_insights = pd.DataFrame()
+        franchise_insights = pd.DataFrame()
+
+        # Branch leakage insights
+        if self.branch_leakage_summary is not None and not self.branch_leakage_summary.empty:
+            branch_insights = self.branch_leakage_summary.copy()
+
+            branch_insights["dominant_leakage_driver"] = branch_insights.apply(
+                lambda row: self._get_dominant_driver(row),
+                axis=1
+            )
+
+            branch_insights["secondary_driver"] = branch_insights.apply(
+                lambda row: self._get_secondary_driver(row),
+                axis=1
+            )
+
+            branch_insights["root_cause_explanation"] = branch_insights.apply(
+                lambda row: self._explain_leakage_root_cause(
+                    row,
+                    entity_type="branch"
+                ),
+                axis=1
+            )
+
+            branch_insights["recommended_fix"] = branch_insights.apply(
+                lambda row: self._recommend_leakage_fix(
+                    row["dominant_leakage_driver"],
+                    row["revenue_leakage_score"]
+                ),
+                axis=1
+            )
+
+        # Franchise leakage insights
+        if self.franchise_leakage_summary is not None and not self.franchise_leakage_summary.empty:
+            franchise_insights = self.franchise_leakage_summary.copy()
+
+            franchise_insights["dominant_leakage_driver"] = franchise_insights.apply(
+                lambda row: self._get_dominant_driver(row),
+                axis=1
+            )
+
+            franchise_insights["secondary_driver"] = franchise_insights.apply(
+                lambda row: self._get_secondary_driver(row),
+                axis=1
+            )
+
+            franchise_insights["root_cause_explanation"] = franchise_insights.apply(
+                lambda row: self._explain_leakage_root_cause(
+                    row,
+                    entity_type="franchise"
+                ),
+                axis=1
+            )
+
+            franchise_insights["recommended_fix"] = franchise_insights.apply(
+                lambda row: self._recommend_leakage_fix(
+                    row["dominant_leakage_driver"],
+                    row["revenue_leakage_score"]
+                ),
+                axis=1
+            )
+
+        self.leakage_insights = branch_insights  # Primary leakage insights
+        logger.info("Leakage insights generated successfully")
+        return branch_insights, franchise_insights
+
+    def _get_dominant_driver(self, row: pd.Series) -> str:
+        """Identify dominant leakage driver"""
+        drivers = {
+            "Excess Consumption": row.get("excess_consumption_rate", 0),
+            "Repeat Failures": row.get("repeat_failure_rate", 0),
+            "Warranty Abuse": row.get("warranty_rate", 0),
+            "Stock Mismatch": row.get("stock_mismatch_rate", 0),
+        }
+        return max(drivers.items(), key=lambda x: x[1])[0]
+
+    def _get_secondary_driver(self, row: pd.Series) -> str:
+        """Identify secondary leakage driver"""
+        drivers = {
+            "Excess Consumption": row.get("excess_consumption_rate", 0),
+            "Repeat Failures": row.get("repeat_failure_rate", 0),
+            "Warranty Abuse": row.get("warranty_rate", 0),
+            "Stock Mismatch": row.get("stock_mismatch_rate", 0),
+        }
+        sorted_drivers = sorted(drivers.items(), key=lambda x: x[1], reverse=True)
+        return sorted_drivers[1][0] if len(sorted_drivers) > 1 else "None"
+
+    def _explain_leakage_root_cause(self, row: pd.Series, entity_type: str) -> str:
+        """Generate root cause explanation"""
+        entity_id = row[row.index[0]]
+        score = row["revenue_leakage_score"]
+        dominant = row["dominant_leakage_driver"]
+        secondary = row["secondary_driver"]
+
+        # Get specific rates
+        excess_rate = row.get("excess_consumption_rate", 0) * 100
+        repeat_rate = row.get("repeat_failure_rate", 0) * 100
+        warranty_rate = row.get("warranty_rate", 0) * 100
+        mismatch_rate = row.get("stock_mismatch_rate", 0) * 100
+
+        explanation_parts = []
+
+        if dominant == "Excess Consumption":
+            explanation_parts.append(f"{excess_rate:.1f}% of parts show abnormally high consumption volatility")
+        elif dominant == "Repeat Failures":
+            explanation_parts.append(f"{repeat_rate:.1f}% of jobs require multiple part replacements indicating quality or diagnostic issues")
+        elif dominant == "Warranty Abuse":
+            explanation_parts.append(f"{warranty_rate:.1f}% of consumption occurs under warranty/AMC suggesting potential policy exploitation")
+        elif dominant == "Stock Mismatch":
+            explanation_parts.append(f"{mismatch_rate:.1f}% of transactions show order-consumption gaps indicating inventory control issues")
+
+        if secondary != "None":
+            if secondary == "Excess Consumption":
+                explanation_parts.append(f"compounded by {excess_rate:.1f}% excess consumption")
+            elif secondary == "Repeat Failures":
+                explanation_parts.append(f"compounded by {repeat_rate:.1f}% repeat failures")
+            elif secondary == "Warranty Abuse":
+                explanation_parts.append(f"compounded by {warranty_rate:.1f}% warranty-related consumption")
+            elif secondary == "Stock Mismatch":
+                explanation_parts.append(f"compounded by {mismatch_rate:.1f}% stock mismatches")
+
+        severity = "severe" if score > 0.5 else "moderate" if score > 0.3 else "minor"
+
+        return f"This {entity_type} has {severity} leakage (score: {score:.2f}): {'; '.join(explanation_parts)}"
+
+    def _recommend_leakage_fix(self, dominant_driver: str, score: float) -> str:
+        """Recommend specific fix based on dominant driver"""
+        urgency = "immediate" if score > 0.5 else "priority" if score > 0.3 else "routine"
+
+        if dominant_driver == "Excess Consumption":
+            return f"Conduct {urgency} review of consumption patterns; implement consumption approval workflow for high-volatility parts"
+        elif dominant_driver == "Repeat Failures":
+            return f"Launch {urgency} technician training program; audit diagnostic procedures and part quality with suppliers"
+        elif dominant_driver == "Warranty Abuse":
+            return f"Implement {urgency} warranty claim verification process; review AMC contract terms and eligibility checks"
+        elif dominant_driver == "Stock Mismatch":
+            return f"Execute {urgency} inventory reconciliation; enforce mandatory indent-consumption linking in ERP system"
+        else:
+            return f"Conduct {urgency} comprehensive operational audit"
+
+    def generate_spare_part_narratives(self) -> List[str]:
+        """
+        Generate consulting-style narratives for high-risk spare parts.
+
+        Each narrative explains:
+        - Why the part is high-risk
+        - What business impact this creates
+        - What immediate action is required
+        """
+        logger.info("Generating spare part narratives...")
+
+        if self.top_20_high_risk_spares is None or self.top_20_high_risk_spares.empty:
+            logger.warning("No high-risk spares available. Returning empty narratives.")
+            self.spare_part_narratives = []
+            return []
+
+        narratives = []
+
+        for idx, row in self.top_20_high_risk_spares.head(10).iterrows():
+            part_id = row[self.top_20_high_risk_spares.columns[0]]
+            risk_score = row["risk_score"]
+            total_consumption = row["total_consumption"]
+            unique_jobs = row["unique_jobs"]
+
+            excess_rate = row.get("excess_consumption_rate", 0) * 100
+            repeat_rate = row.get("repeat_failure_rate", 0) * 100
+            warranty_rate = row.get("warranty_rate", 0) * 100
+
+            # Determine primary risk factor
+            risk_factors = {
+                "consumption volatility": excess_rate,
+                "repeat failure pattern": repeat_rate,
+                "warranty claim concentration": warranty_rate,
+            }
+            primary_risk = max(risk_factors.items(), key=lambda x: x[1])
+
+            # Build narrative
+            severity = "critical" if risk_score > 0.6 else "high" if risk_score > 0.4 else "elevated"
+
+            narrative = f"Spare part {part_id} presents {severity} risk (score: {risk_score:.2f}) due to {primary_risk[0]} ({primary_risk[1]:.1f}%). "
+
+            # Business impact
+            if primary_risk[0] == "consumption volatility":
+                narrative += f"With {total_consumption:.0f} total units consumed across {unique_jobs:.0f} jobs, this volatility creates unpredictable inventory costs and stockout risk. "
+            elif primary_risk[0] == "repeat failure pattern":
+                narrative += f"Across {unique_jobs:.0f} jobs requiring {total_consumption:.0f} units, repeat failures indicate systematic quality or installation issues increasing service costs. "
+            else:
+                narrative += f"High warranty claim rate across {unique_jobs:.0f} jobs ({total_consumption:.0f} units) suggests potential policy gaps or customer behavior patterns requiring intervention. "
+
+            # Immediate action
+            if excess_rate > repeat_rate and excess_rate > warranty_rate:
+                action = f"Immediate action: Implement min-max inventory controls and investigate root cause of {excess_rate:.1f}% consumption spikes"
+            elif repeat_rate > excess_rate and repeat_rate > warranty_rate:
+                action = f"Immediate action: Audit installation quality and technician competency for this part; {repeat_rate:.1f}% repeat rate is unacceptable"
+            else:
+                action = f"Immediate action: Review warranty eligibility criteria and claims approval process for this part category"
+
+            narrative += action
+            narratives.append(narrative)
+
+        self.spare_part_narratives = narratives
+        logger.info(f"Generated {len(narratives)} spare part narratives")
+        return narratives
+
+    # ----------------------------
     # Full pipeline
     # ----------------------------
     def run_full_pipeline(self) -> Dict[str, Any]:
@@ -915,6 +1414,12 @@ class SparePartsForecastingEngine:
             self.generate_demand_forecast()
             self.detect_revenue_leakage()
 
+            # Generate decision intelligence insights
+            self.generate_executive_insights()
+            self.generate_demand_insights()
+            self.generate_leakage_insights()
+            self.generate_spare_part_narratives()
+
             logger.info("=" * 80)
             logger.info("PIPELINE COMPLETED SUCCESSFULLY")
             logger.info("=" * 80)
@@ -927,6 +1432,10 @@ class SparePartsForecastingEngine:
                 "top_20_high_risk_spares": self.top_20_high_risk_spares,
                 "canonical_fields": self.canonical_fields,
                 "join_loss_percentage": self.join_loss_percentage,
+                "executive_insights": self.executive_insights,
+                "demand_insights": self.demand_insights,
+                "leakage_insights": self.leakage_insights,
+                "spare_part_narratives": self.spare_part_narratives,
             }
 
         except Exception as e:

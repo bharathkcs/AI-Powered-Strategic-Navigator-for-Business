@@ -151,6 +151,14 @@ def run_analysis(engine: SparePartsForecastingEngine):
         branch_leakage, franchise_leakage, high_risk_spares = engine.detect_revenue_leakage()
         st.success("✅ Revenue leakage analysis completed")
 
+        status_text.text("🧠 Generating decision intelligence insights...")
+        progress_bar.progress(90)
+        engine.generate_executive_insights()
+        engine.generate_demand_insights()
+        engine.generate_leakage_insights()
+        engine.generate_spare_part_narratives()
+        st.success("✅ Decision intelligence insights generated")
+
         progress_bar.progress(100)
         status_text.text("✅ Analysis complete!")
 
@@ -160,7 +168,11 @@ def run_analysis(engine: SparePartsForecastingEngine):
             branch_leakage,
             franchise_leakage,
             high_risk_spares,
-            engine.canonical_fields
+            engine.canonical_fields,
+            engine.executive_insights,
+            engine.demand_insights,
+            engine.leakage_insights,
+            engine.spare_part_narratives
         )
 
     except Exception as e:
@@ -174,9 +186,50 @@ def display_results(
     branch_leakage: pd.DataFrame,
     franchise_leakage: pd.DataFrame,
     high_risk_spares: pd.DataFrame,
-    canonical_fields: dict
+    canonical_fields: dict,
+    executive_insights: dict = None,
+    demand_insights: pd.DataFrame = None,
+    leakage_insights: pd.DataFrame = None,
+    spare_part_narratives: list = None
 ):
     """Display analysis results with visualizations"""
+
+    # Executive Summary Section (TOP OF PAGE)
+    if executive_insights:
+        st.header("🔑 Executive Summary")
+
+        # System health badge
+        health = executive_insights["system_health"]
+        health_colors = {
+            "Healthy": "🟢",
+            "Warning": "🟡",
+            "Critical": "🔴"
+        }
+        st.markdown(f"### System Health: {health_colors.get(health, '⚪')} {health}")
+
+        # CXO one-liner
+        st.info(f"**{executive_insights['one_line_cxo_summary']}**")
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Data Trust Score", f"{executive_insights['data_trust_score']}%")
+        with col2:
+            st.metric("Forecast Confidence", executive_insights["forecast_confidence"])
+        with col3:
+            health_score = {"Healthy": 100, "Warning": 60, "Critical": 20}
+            st.metric("System Health Score", health_score.get(health, 0))
+
+        # Top 3 Risks
+        st.markdown("#### ⚠️ Top 3 Risks")
+        for i, risk in enumerate(executive_insights["top_3_risks"], 1):
+            st.markdown(f"{i}. {risk}")
+
+        # Top 3 Actions
+        st.markdown("#### ✅ Top 3 Recommended Actions")
+        for i, action in enumerate(executive_insights["top_3_actions"], 1):
+            st.markdown(f"{i}. {action}")
+
+        st.markdown("---")
 
     st.header("📊 Analysis Results")
 
@@ -189,21 +242,20 @@ def display_results(
     ])
 
     with tab1:
-        st.subheader("Spare Parts Demand Forecasts")
+        st.subheader("📦 Demand Signals & Planning Actions")
 
-        if forecast_df.empty:
-            st.warning("No forecasts generated. Insufficient historical data.")
-        else:
+        if demand_insights is not None and not demand_insights.empty:
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric("Parts Forecasted", forecast_df["part_id"].nunique())
+                st.metric("Parts Forecasted", demand_insights["part_id"].nunique())
             with col2:
-                st.metric("Total Forecast Horizons", len(forecast_df))
+                rising_count = (demand_insights["demand_signal"] == "Rising").sum()
+                st.metric("Rising Demand Parts", rising_count)
             with col3:
-                avg_demand = forecast_df["forecast_demand"].mean()
-                st.metric("Avg Forecasted Demand", f"{avg_demand:.2f}")
+                action_increase = (demand_insights["planning_action"] == "Increase Stock").sum()
+                st.metric("Stock Increase Required", action_increase)
 
-            st.markdown("### 📅 Forecast Analysis")
+            st.markdown("### 📊 Demand Signal Overview")
 
             horizon = st.selectbox(
                 "Select Forecast Horizon",
@@ -211,53 +263,129 @@ def display_results(
                 format_func=lambda x: x.replace("_", " ").title()
             )
 
-            forecast_horizon_df = forecast_df[forecast_df["forecast_horizon"] == horizon]
+            horizon_insights = demand_insights[demand_insights["forecast_horizon"] == horizon]
 
-            if not forecast_horizon_df.empty:
-                top_parts = forecast_horizon_df.nlargest(10, "forecast_demand")
+            if not horizon_insights.empty:
+                # Signal distribution
+                signal_counts = horizon_insights["demand_signal"].value_counts()
+                col1, col2 = st.columns(2)
 
-                fig = go.Figure()
-                fig.add_trace(go.Bar(
-                    x=top_parts["part_id"],
-                    y=top_parts["forecast_demand"],
-                    name="Forecast"
-                ))
-                fig.add_trace(go.Scatter(
-                    x=top_parts["part_id"],
-                    y=top_parts["ci_upper"],
-                    mode="lines",
-                    name="Upper CI",
-                    line=dict(dash="dash")
-                ))
-                fig.add_trace(go.Scatter(
-                    x=top_parts["part_id"],
-                    y=top_parts["ci_lower"],
-                    mode="lines",
-                    name="Lower CI",
-                    line=dict(dash="dash"),
-                    fill="tonexty"
-                ))
+                with col1:
+                    fig_signal = px.pie(
+                        values=signal_counts.values,
+                        names=signal_counts.index,
+                        title="Demand Signal Distribution",
+                        color=signal_counts.index,
+                        color_discrete_map={
+                            "Rising": "#00CC96",
+                            "Stable": "#636EFA",
+                            "Declining": "#EF553B"
+                        }
+                    )
+                    st.plotly_chart(fig_signal, use_container_width=True)
 
-                fig.update_layout(
-                    title=f"Top 10 Parts - {horizon.replace('_', ' ').title()} Forecast",
-                    xaxis_title="Part ID",
-                    yaxis_title="Forecasted Demand",
-                    hovermode="x unified",
-                    height=500
+                with col2:
+                    action_counts = horizon_insights["planning_action"].value_counts()
+                    fig_action = px.bar(
+                        x=action_counts.index,
+                        y=action_counts.values,
+                        title="Recommended Planning Actions",
+                        labels={"x": "Action", "y": "Count"},
+                        color=action_counts.values
+                    )
+                    st.plotly_chart(fig_action, use_container_width=True)
+
+                st.markdown("### 🎯 Actionable Demand Insights")
+
+                # Filter options
+                signal_filter = st.multiselect(
+                    "Filter by Demand Signal",
+                    ["Rising", "Stable", "Declining"],
+                    default=["Rising", "Declining"]
                 )
 
-                st.plotly_chart(fig, use_container_width=True)
+                filtered_insights = horizon_insights[horizon_insights["demand_signal"].isin(signal_filter)]
 
-                st.markdown("### 📋 Detailed Forecasts")
-                st.dataframe(
-                    forecast_horizon_df.sort_values("forecast_demand", ascending=False),
-                    use_container_width=True
-                )
+                # Display insights with color coding
+                for _, row in filtered_insights.head(20).iterrows():
+                    signal_emoji = {"Rising": "📈", "Stable": "➡️", "Declining": "📉"}
+                    action_emoji = {"Increase Stock": "⬆️", "Maintain": "↔️", "Reduce": "⬇️", "Monitor Closely": "👀"}
+
+                    with st.expander(f"{signal_emoji.get(row['demand_signal'], '')} {row['part_id']} - {row['planning_action']}"):
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Demand Signal", row["demand_signal"])
+                        with col2:
+                            st.metric("Planning Action", row["planning_action"])
+                        with col3:
+                            st.metric("Confidence", row["forecast_confidence"])
+
+                        st.markdown(f"**Forecast:** {row['forecast_demand']:.1f} units")
+                        st.markdown(f"**Historical Average:** {row['historical_avg_demand']:.1f} units")
+                        st.markdown(f"**Explanation:** {row['reason']}")
+
+                with st.expander("📋 View All Forecast Data (Expandable)", expanded=False):
+                    st.dataframe(
+                        horizon_insights.sort_values("forecast_demand", ascending=False),
+                        use_container_width=True
+                    )
+        elif forecast_df is not None and not forecast_df.empty:
+            st.warning("⚠️ Demand insights not available. Showing raw forecast data.")
+            st.dataframe(forecast_df, use_container_width=True)
+        else:
+            st.warning("No forecasts generated. Insufficient historical data.")
 
     with tab2:
-        st.subheader("Service-Led Revenue Leakage Analysis")
+        st.subheader("🚨 Service-Led Revenue Leakage Analysis with Explanations")
 
-        if not branch_leakage.empty:
+        if leakage_insights is not None and not leakage_insights.empty:
+            st.markdown("### 🏢 Branch-Level Leakage with Root Cause Analysis")
+            top_branches = leakage_insights.head(10)
+
+            fig = px.bar(
+                top_branches,
+                x=leakage_insights.columns[0],
+                y="revenue_leakage_score",
+                title="Top 10 Branches by Revenue Leakage Score",
+                labels={leakage_insights.columns[0]: "Branch", "revenue_leakage_score": "Leakage Score"},
+                color="revenue_leakage_score",
+                color_continuous_scale="Reds"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.markdown("### 💡 Branch Leakage Insights")
+
+            for _, branch_row in top_branches.iterrows():
+                branch_id = branch_row[leakage_insights.columns[0]]
+                score = branch_row["revenue_leakage_score"]
+
+                score_color = "🔴" if score > 0.5 else "🟡" if score > 0.3 else "🟢"
+
+                with st.expander(f"{score_color} Branch {branch_id} - Leakage Score: {score:.2f}"):
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("Excess Consumption", f"{branch_row['excess_consumption_rate']*100:.1f}%")
+                    with col2:
+                        st.metric("Repeat Failures", f"{branch_row['repeat_failure_rate']*100:.1f}%")
+                    with col3:
+                        st.metric("Warranty Rate", f"{branch_row['warranty_rate']*100:.1f}%")
+                    with col4:
+                        st.metric("Stock Mismatch", f"{branch_row['stock_mismatch_rate']*100:.1f}%")
+
+                    st.markdown("**🔍 Root Cause Analysis:**")
+                    st.info(branch_row["root_cause_explanation"])
+
+                    st.markdown("**🎯 Dominant Driver:**")
+                    st.warning(f"{branch_row['dominant_leakage_driver']} (Secondary: {branch_row['secondary_driver']})")
+
+                    st.markdown("**✅ Recommended Fix:**")
+                    st.success(branch_row["recommended_fix"])
+
+            with st.expander("📋 View Full Branch Leakage Data", expanded=False):
+                st.dataframe(leakage_insights, use_container_width=True)
+
+        elif not branch_leakage.empty:
+            st.warning("⚠️ Leakage insights not available. Showing raw leakage data.")
             st.markdown("### 🏢 Branch-Level Leakage")
             top_branches = branch_leakage.head(10)
 
@@ -270,24 +398,6 @@ def display_results(
                 color="revenue_leakage_score"
             )
             st.plotly_chart(fig, use_container_width=True)
-
-            st.markdown("### 📊 Leakage Components Breakdown")
-            selected_branch = st.selectbox(
-                "Select Branch for Details",
-                top_branches[branch_leakage.columns[0]].tolist()
-            )
-            branch_data = top_branches[top_branches[branch_leakage.columns[0]] == selected_branch].iloc[0]
-
-            c1, c2, c3, c4 = st.columns(4)
-            with c1:
-                st.metric("Excess Consumption", f"{branch_data['excess_consumption_rate']*100:.1f}%")
-            with c2:
-                st.metric("Repeat Failures", f"{branch_data['repeat_failure_rate']*100:.1f}%")
-            with c3:
-                st.metric("Warranty Rate", f"{branch_data['warranty_rate']*100:.1f}%")
-            with c4:
-                st.metric("Stock Mismatch", f"{branch_data['stock_mismatch_rate']*100:.1f}%")
-
             st.dataframe(branch_leakage, use_container_width=True)
 
         if not franchise_leakage.empty:
@@ -305,8 +415,19 @@ def display_results(
             st.plotly_chart(fig, use_container_width=True)
             st.dataframe(franchise_leakage, use_container_width=True)
 
+        # High-Risk Spare Stories Section
+        if spare_part_narratives is not None and len(spare_part_narratives) > 0:
+            st.markdown("---")
+            st.markdown("### ⚠️ High-Risk Spare Parts: Executive Briefing")
+            st.markdown("**Consulting-style insights for immediate action**")
+
+            for i, narrative in enumerate(spare_part_narratives, 1):
+                st.markdown(f"**{i}.** {narrative}")
+                st.markdown("")
+
         if not high_risk_spares.empty:
-            st.markdown("### ⚠️ Top 20 High-Risk Spare Parts")
+            st.markdown("---")
+            st.markdown("### 📊 High-Risk Spares Visualization")
 
             fig = px.scatter(
                 high_risk_spares,
@@ -319,10 +440,14 @@ def display_results(
                     "total_consumption": "Total Consumption",
                     "risk_score": "Risk Score",
                     "unique_jobs": "Unique Jobs"
-                }
+                },
+                color="risk_score",
+                color_continuous_scale="Reds"
             )
             st.plotly_chart(fig, use_container_width=True)
-            st.dataframe(high_risk_spares, use_container_width=True)
+
+            with st.expander("📋 View Full High-Risk Spares Data", expanded=False):
+                st.dataframe(high_risk_spares, use_container_width=True)
 
     with tab3:
         st.subheader("Data Quality Analysis")
@@ -389,57 +514,104 @@ def display_results(
     with tab5:
         st.subheader("Export Analysis Results")
 
-        if not forecast_df.empty:
-            st.markdown("### 📈 Demand Forecasts")
-            csv_forecast = forecast_df.to_csv(index=False)
+        # Export Executive Insights
+        if executive_insights is not None:
+            st.markdown("### 🔑 Executive Insights")
+            insights_text = f"""
+EXECUTIVE SUMMARY - SPARE PARTS ANALYSIS
+{'='*60}
+
+System Health: {executive_insights['system_health']}
+Data Trust Score: {executive_insights['data_trust_score']}%
+Forecast Confidence: {executive_insights['forecast_confidence']}
+
+CXO Summary:
+{executive_insights['one_line_cxo_summary']}
+
+TOP 3 RISKS:
+{chr(10).join(f'{i}. {risk}' for i, risk in enumerate(executive_insights['top_3_risks'], 1))}
+
+TOP 3 RECOMMENDED ACTIONS:
+{chr(10).join(f'{i}. {action}' for i, action in enumerate(executive_insights['top_3_actions'], 1))}
+"""
             st.download_button(
-                label="📥 Download Forecasts (CSV)",
-                data=csv_forecast,
-                file_name=f"demand_forecasts_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                label="📥 Download Executive Summary (TXT)",
+                data=insights_text,
+                file_name=f"executive_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                mime="text/plain"
+            )
+
+        # Export Demand Insights
+        if demand_insights is not None and not demand_insights.empty:
+            st.markdown("### 📦 Demand Insights")
+            csv_demand = demand_insights.to_csv(index=False)
+            st.download_button(
+                label="📥 Download Demand Insights (CSV)",
+                data=csv_demand,
+                file_name=f"demand_insights_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                 mime="text/csv"
             )
 
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            if not branch_leakage.empty:
-                csv_branch = branch_leakage.to_csv(index=False)
-                st.download_button(
-                    label="📥 Download Branch Leakage (CSV)",
-                    data=csv_branch,
-                    file_name=f"branch_leakage_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv"
-                )
-        with col2:
-            if not franchise_leakage.empty:
-                csv_franchise = franchise_leakage.to_csv(index=False)
-                st.download_button(
-                    label="📥 Download Franchise Leakage (CSV)",
-                    data=csv_franchise,
-                    file_name=f"franchise_leakage_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv"
-                )
-        with col3:
-            if not high_risk_spares.empty:
-                csv_risk = high_risk_spares.to_csv(index=False)
-                st.download_button(
-                    label="📥 Download High-Risk Spares (CSV)",
-                    data=csv_risk,
-                    file_name=f"high_risk_spares_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv"
-                )
+        # Export Leakage Insights
+        if leakage_insights is not None and not leakage_insights.empty:
+            st.markdown("### 🚨 Leakage Insights")
+            csv_leakage = leakage_insights.to_csv(index=False)
+            st.download_button(
+                label="📥 Download Leakage Insights (CSV)",
+                data=csv_leakage,
+                file_name=f"leakage_insights_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
 
+        # Export Spare Part Narratives
+        if spare_part_narratives is not None and len(spare_part_narratives) > 0:
+            st.markdown("### ⚠️ High-Risk Spare Narratives")
+            narratives_text = "\n\n".join(f"{i}. {narrative}" for i, narrative in enumerate(spare_part_narratives, 1))
+            st.download_button(
+                label="📥 Download Spare Part Narratives (TXT)",
+                data=narratives_text,
+                file_name=f"spare_part_narratives_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                mime="text/plain"
+            )
+
+        st.markdown("---")
         st.markdown("### 📦 Complete Analysis Package")
 
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            if not forecast_df.empty:
+            # Executive Insights
+            if executive_insights is not None:
+                exec_df = pd.DataFrame([{
+                    "Metric": k,
+                    "Value": str(v) if not isinstance(v, list) else "; ".join(v)
+                } for k, v in executive_insights.items()])
+                exec_df.to_excel(writer, sheet_name="Executive_Insights", index=False)
+
+            # Demand Insights
+            if demand_insights is not None and not demand_insights.empty:
+                demand_insights.to_excel(writer, sheet_name="Demand_Insights", index=False)
+            elif not forecast_df.empty:
                 forecast_df.to_excel(writer, sheet_name="Forecasts", index=False)
-            if not branch_leakage.empty:
+
+            # Leakage Insights
+            if leakage_insights is not None and not leakage_insights.empty:
+                leakage_insights.to_excel(writer, sheet_name="Leakage_Insights", index=False)
+            elif not branch_leakage.empty:
                 branch_leakage.to_excel(writer, sheet_name="Branch_Leakage", index=False)
+
             if not franchise_leakage.empty:
                 franchise_leakage.to_excel(writer, sheet_name="Franchise_Leakage", index=False)
+
             if not high_risk_spares.empty:
                 high_risk_spares.to_excel(writer, sheet_name="High_Risk_Spares", index=False)
+
+            # Spare Part Narratives
+            if spare_part_narratives is not None and len(spare_part_narratives) > 0:
+                narratives_df = pd.DataFrame({
+                    "ID": range(1, len(spare_part_narratives) + 1),
+                    "Narrative": spare_part_narratives
+                })
+                narratives_df.to_excel(writer, sheet_name="Spare_Narratives", index=False)
 
             schema_df = pd.DataFrame(
                 [{"Canonical_Field": k, "Actual_Column": v} for k, v in canonical_fields.items()]
@@ -448,10 +620,10 @@ def display_results(
 
         excel_bytes = output.getvalue()
         st.download_button(
-            label="📥 Download Complete Analysis (Excel)",
+            label="📥 Download Complete Decision Intelligence Package (Excel)",
             data=excel_bytes,
-            file_name=f"spare_parts_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            file_name=f"decision_intelligence_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-        st.success("✅ All results ready for export!")
+        st.success("✅ All decision intelligence results ready for export!")
