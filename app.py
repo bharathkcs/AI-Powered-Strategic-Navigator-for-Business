@@ -14,17 +14,15 @@ from modules.financial_data_handler import FinancialDataHandler
 from modules.strategy_map import StrategyMap
 from modules.revenue_leakage_detector import RevenueLeakageDetector
 from modules.ifb_service_forecasting import IFBServiceForecasting
+from modules.spare_parts_planning_page import render_spare_parts_planning_page
 
 
 llm = LLMInterface()
 rag = RAG(llm)
 financial_handler = FinancialDataHandler(llm)
 
-st.set_page_config(page_title="AI-Powered Strategic Navigator for Business", layout="wide")
+st.set_page_config(page_title="IFB Decision Intelligence Hub", layout="wide")
 
-def store_feedback(response, rating, comment):
-    with open("feedback_log.csv", "a") as log:
-        log.write(f"{response},{rating},{comment}\n")
 
 display_title()
 selected_page = display_navigation()
@@ -42,7 +40,7 @@ def main():
     page_to_display = selected_page
 
     if page_to_display == "🏠 Home":
-        st.header("🎉 Welcome to the AI-Powered Strategic Navigator for Business 🎉")
+        st.header("🎉 Welcome to the IFB Decision Intelligence Hub 🎉")
         st.markdown("""
         🚀 **Transform Your Business Decision-Making with AI** 🚀  
         Our AI-powered solution revolutionizes how businesses make decisions by leveraging advanced **Generative AI** and **Retrieval-Augmented Generation (RAG)** technology. This platform is designed to provide comprehensive insights and tailored strategies based on your specific data, empowering you to make informed decisions with precision.
@@ -85,28 +83,21 @@ def main():
            - **🔄 Strategy Impact**: Analyze the effects of new strategies on your business, from sales to customer retention.
            - **Ask**: "How has our new pricing strategy impacted customer satisfaction?"
 
-        6. **💼 Company Analysis**  
-           **Overview**: Input company names to receive financial overviews, news sentiment analysis, and strategic recommendations.  
-           **Sub-features**:  
-           - **💰 Financial Overview**: Get insights into companies’ market cap, revenue, and profitability.
-           - **📊 SWOT Analysis**: Generate a SWOT analysis for companies based on their financials and news.
-           - **📰 News Sentiment**: Analyze news articles to gauge market sentiment (positive, neutral, or negative).
-
-        7. **🔄 Auto-Adaptive Business Strategy Maps**  
+        6. **🔄 Auto-Adaptive Business Strategy Maps**  
            **Overview**: Simulate the potential impact of different strategies on your business.  
            **Sub-features**:  
            - **🎯 Strategy Simulation**: Test various business strategies, such as increasing marketing budgets, and visualize their impact on revenue, market share, and customer satisfaction.
            - **🔍 Scenario Planning**: Compare different strategic options to determine the best course of action.
            - **Ask**: "What if we increase our advertising spend by 20% next quarter?"
 
-        8. **📈 Metric Tracking**
+        7. **📈 Metric Tracking**
            **Overview**: Track and forecast business metrics, detect anomalies, and set performance alerts.
            **Sub-features**:
            - **🔮 Predictive Analytics**: Forecast future performance for key metrics like sales, customer growth, or market trends.
            - **🔍 Correlation Analysis**: Discover correlations between business metrics, such as the link between marketing spend and sales.
            - **🚨 Anomaly Detection**: Identify unusual spikes or drops in your business metrics and receive automatic alerts.
 
-        9. **💸 Revenue Leakage Analysis** *(NEW!)*
+        8. **💸 Revenue Leakage Analysis** *(NEW!)*
            **Overview**: Identify and forecast revenue leakages across your business operations with advanced AI-powered analysis.
            **Sub-features**:
            - **📊 Executive Dashboard**: Get a comprehensive overview of total revenue leakage, potential savings, and key metrics at a glance.
@@ -119,11 +110,7 @@ def main():
            - **🤖 AI Recommendations**: Receive comprehensive, actionable recommendations to reduce revenue leakage and improve profitability.
            - **Ask**: "Where is my business losing money?" or "How can I reduce revenue leakage?"
 
-        10. **📝 Feedback**
-           **Overview**: Provide feedback on the AI-generated insights and application performance.  
-           **Sub-features**:  
-           - **👍 User Feedback Form**: Share your thoughts, rate the AI insights, and suggest improvements.
-           - **💬 Interactive Suggestions**: Offer feedback to enhance future updates and improve the user experience.
+
 
         ### **🌐 How to Navigate**
 
@@ -131,10 +118,8 @@ def main():
         - **🔍 Q&A System**: Upload data and ask business-related questions.
         - **📊 Data Insights**: Explore automatic analysis and visualizations of your data.
         - **💡 AI-Powered Strategies**: Receive customized strategic recommendations.
-        - **💼 Company Analysis**: Input company names for financial insights and news analysis.
         - **📈 Metric Tracking**: Monitor and forecast key business metrics.
         - **🔄 Auto-Adaptive Strategy Maps**: Simulate business strategies and their impact.
-        - **📝 Feedback**: Share your feedback to improve the application.
 
         **Experience the future of business decision-making today!** 🚀  
         **Need help?** Reach out to us at 📧 [kcsb28@gmail.com](mailto:kcsb28@gmail.com).
@@ -174,65 +159,6 @@ def main():
         else:
             st.error("No dataset uploaded. Please upload a dataset in the Q&A System page to generate strategy maps.")
 
-    elif page_to_display == "💼 Company Analysis":
-        st.header("Company Analysis and Strategy Recommendations")
-
-        company_names = st.text_input("Enter the Company Names (comma-separated):")
-
-        if company_names:
-            names_list = [name.strip() for name in company_names.split(',')]
-            company_data = financial_handler.get_company_financials(names_list)
-
-            if company_data is not None and not company_data.empty:
-                st.session_state.financial_data = company_data
-                st.subheader("Financial Overview")
-                st.write(company_data)
-
-                
-                if st.button("Generate SWOT Analysis"):
-                    with st.spinner("Generating SWOT Analysis..."):
-                        swot_prompt = f"Generate a SWOT analysis for the following companies based on their financial data and recent news:\n\n{company_data.to_string()}\n\nProvide a SWOT analysis for each company."
-                        swot_analysis = llm.conversational_response([{'sender': 'user', 'text': swot_prompt}])['text']
-                    st.write("**SWOT Analysis:**")
-                    st.write(swot_analysis)
-
-                
-                st.subheader("Financial Metrics Comparison")
-                metrics_to_plot = st.multiselect("Select Metrics to Visualize", company_data.columns.tolist(), default=['Market Cap', 'Revenue', 'Net Income'])
-                if metrics_to_plot:
-                    fig = px.bar(company_data.reset_index(), x='Company Name', y=metrics_to_plot, barmode='group')
-                    st.plotly_chart(fig)
-
-                
-                st.subheader("Company News and Sentiment Analysis")
-                for symbol in company_data.index:
-                    news_df = financial_handler.get_company_news(symbol)
-                    if not news_df.empty:
-                        st.write(f"**News for {company_data.loc[symbol, 'Company Name']} ({symbol}):**")
-                        for idx, row in news_df.iterrows():
-                            sentiment = "Positive" if row['Sentiment'] > 0 else "Negative" if row['Sentiment'] < 0 else "Neutral"
-                            st.markdown(f"- [{row['title']}]({row['link']}) - {row['publisher']} ({row['providerPublishTime'].strftime('%Y-%m-%d')}) - Sentiment: **{sentiment}**")
-                    else:
-                        st.write(f"No recent news for {company_data.loc[symbol, 'Company Name']} ({symbol})")
-
-                
-                st.subheader("Recent Changes and Adaptations")
-                for symbol in company_data.index:
-                    st.write(f"**Recent Insights for {company_data.loc[symbol, 'Company Name']} ({symbol}):**")
-                    insights = financial_handler.get_recent_changes(symbol)
-                    st.write(insights)
-
-                
-                if st.button("Generate Strategic Recommendations"):
-                    with st.spinner("Analyzing data and generating recommendations..."):
-                        data_summary = company_data.to_string()
-                        strategies = llm.generate_strategic_recommendations(data_summary)
-                    st.write("**Strategic Recommendations:**")
-                    st.write(strategies)
-
-            else:
-                st.error("No valid companies found with the provided names. Please check and try again.")
-
     elif page_to_display == "💸 Revenue Leakage Analysis":
         st.header("AI-Powered Revenue Leakage Detection & Forecasting")
         st.markdown("""
@@ -246,7 +172,8 @@ def main():
                 revenue_detector.detect_leakages()
             except Exception as e:
                 st.error(f"Error in revenue leakage analysis: {str(e)}")
-                st.info("Please ensure your dataset contains columns like 'Sales', 'Profit', 'Discount', etc.")
+                st.exception(e)
+
         else:
             st.warning("⚠️ Please upload a dataset in the Q&A System page to analyze revenue leakages.")
             st.info("""
@@ -336,17 +263,10 @@ def main():
             - Complete service lifecycle data
             """)
 
-    elif page_to_display == "💬 Feedback":
-        st.header("Feedback")
-
-        feedback_text = st.text_area("Provide your feedback:", placeholder="We value your feedback...")
-        relevance_score = st.slider("How relevant was the AI-generated insight?", 0, 10, 5)
-
-        if st.button("Submit Feedback"):
-            if feedback_text:
-                store_feedback("General Feedback", relevance_score, feedback_text)
-                st.success("Thank you for your feedback!")
-                st.balloons()
+    elif page_to_display == "⚙️ Spare Parts Planning":
+        # NEW TAB: Spare Parts Demand Forecasting & Revenue Leakage
+        # This is a standalone add-on module - does NOT modify existing functionality
+        render_spare_parts_planning_page()
 
     elif page_to_display == "🔍 Q&A System":
         st.header("Interactive Q&A System")

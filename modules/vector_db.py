@@ -2,24 +2,23 @@ from sentence_transformers import SentenceTransformer
 import os
 import uuid
 from dotenv import load_dotenv
-from pinecone import Pinecone, ServerlessSpec
+from pinecone import Pinecone
 
 load_dotenv()
 
 class VectorDB:
     def __init__(self):
-
         api_key = os.getenv("PINECONE_API_KEY")
         if not api_key:
             raise ValueError("PINECONE_API_KEY is missing in environment")
 
-        # NEW SDK – correct initialization
+        # Pinecone v8 client
         self.pc = Pinecone(api_key=api_key)
 
         self.index_name = "enterprise-rag-index"
 
-        # Get index list
-        existing_indexes = [idx["name"] for idx in self.pc.list_indexes()]
+        # Get existing indexes (v8 returns objects)
+        existing_indexes = [idx.name for idx in self.pc.list_indexes()]
 
         # Create index if missing
         if self.index_name not in existing_indexes:
@@ -27,12 +26,18 @@ class VectorDB:
                 name=self.index_name,
                 dimension=384,
                 metric="cosine",
-                spec=ServerlessSpec(cloud="aws", region="us-west-2")
+                spec={
+                    "serverless": {
+                        "cloud": "aws",
+                        "region": "us-west-2"
+                    }
+                }
             )
 
+        # Connect to index
         self.index = self.pc.Index(self.index_name)
 
-        # Sentence Transformer embeddings
+        # Embedding model
         self.model = SentenceTransformer("all-MiniLM-L6-v2")
 
     def upsert_documents(self, documents):
@@ -54,26 +59,18 @@ class VectorDB:
     def query(self, query_text, top_k=5):
         embedding = self.model.encode(query_text).tolist()
 
-        try:
-            results = self.index.query(
-                vector=embedding,
-                top_k=top_k,
-                include_metadata=True
-            )
+        results = self.index.query(
+            vector=embedding,
+            top_k=top_k,
+            include_metadata=True
+        )
 
-            # Normalize response
-            matches = []
-            for m in results.get("matches", []):
-                matches.append({
-                    "id": m.get("id"),
-                    "score": m.get("score"),
-                    "metadata": m.get("metadata", {})
-                })
+        matches = []
+        for m in results.get("matches", []):
+            matches.append({
+                "id": m["id"],
+                "score": m["score"],
+                "metadata": m.get("metadata", {})
+            })
 
-            return {"matches": matches}
-
-        except Exception as e:
-            return {"matches": [], "error": str(e)}
-
-    def close(self):
-        pass   # no close() in new SDK
+        return {"matches": matches}
