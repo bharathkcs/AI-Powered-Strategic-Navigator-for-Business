@@ -112,9 +112,13 @@ class IFBServiceForecasting:
 
         with tabs[2]:
             self.service_volume_analysis()
+            # Add machine status and service attribute correlation
+            self.service_attribute_correlation_analysis()
 
         with tabs[3]:
             self.spare_parts_planning()
+            # Add product and location intelligence
+            self.product_location_intelligence()
 
         with tabs[4]:
             self.warranty_claims_analysis()
@@ -688,6 +692,90 @@ class IFBServiceForecasting:
             fig.update_xaxes(side="bottom")
             st.plotly_chart(fig, use_container_width=True)
 
+        # Calculate EOQ and Safety Stock for top parts
+        st.markdown("### 📊 Inventory Optimization - EOQ & Safety Stock")
+
+        # Calculate for top 10 Category A parts
+        top_parts_for_eoq = parts_sorted[parts_sorted['Category'] == 'A'].head(10)
+
+        if not top_parts_for_eoq.empty:
+            eoq_results = []
+            for idx, row in top_parts_for_eoq.iterrows():
+                annual_demand = row['Parts_Used' if 'Parts_Used' in row.index else row.index[0]] * 12  # Annualized
+
+                # Assumptions for EOQ calculation (can be customized)
+                ordering_cost = 500  # ₹ per order
+                holding_cost_rate = 0.25  # 25% of part cost per year
+                avg_part_cost = row.get('Parts_Cost', 100) / max(row.get('Parts_Used', 1), 1) if 'Parts_Cost' in row.index else 100
+
+                # EOQ Formula: sqrt((2 * D * S) / H)
+                # D = annual demand, S = ordering cost, H = holding cost per unit
+                holding_cost_per_unit = avg_part_cost * holding_cost_rate
+
+                if holding_cost_per_unit > 0:
+                    eoq = np.sqrt((2 * annual_demand * ordering_cost) / holding_cost_per_unit)
+                else:
+                    eoq = 0
+
+                # Safety stock calculation (for 95% service level, Z = 1.65)
+                # Assuming 7-day lead time and demand variability
+                daily_demand = annual_demand / 365
+                demand_std_dev = daily_demand * 0.3  # Assume 30% coefficient of variation
+                lead_time_days = 7
+                safety_stock = 1.65 * demand_std_dev * np.sqrt(lead_time_days)
+
+                # Reorder point = (demand during lead time) + safety stock
+                reorder_point = (daily_demand * lead_time_days) + safety_stock
+
+                eoq_results.append({
+                    'Part': idx,
+                    'Annual_Demand': int(annual_demand),
+                    'EOQ': int(eoq),
+                    'Safety_Stock': int(safety_stock),
+                    'Reorder_Point': int(reorder_point),
+                    'Avg_Cost': f"₹{avg_part_cost:,.0f}"
+                })
+
+            eoq_df = pd.DataFrame(eoq_results)
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.markdown("#### Economic Order Quantity (EOQ)")
+                st.info("""
+                **EOQ Definition:** Optimal order quantity that minimizes total inventory costs (ordering + holding).
+
+                **How to use:** Order this quantity each time stock hits the reorder point.
+
+                **Formula:** EOQ = √((2 × Annual Demand × Ordering Cost) / Holding Cost per Unit)
+                """)
+
+            with col2:
+                st.markdown("#### Safety Stock & Reorder Point")
+                st.info("""
+                **Safety Stock:** Buffer inventory to prevent stockouts during demand variability or lead time delays.
+
+                **Reorder Point:** Stock level that triggers a new order.
+
+                **Formula:** Reorder Point = (Daily Demand × Lead Time) + Safety Stock
+                """)
+
+            st.dataframe(eoq_df.style.format({
+                'Annual_Demand': '{:,}',
+                'EOQ': '{:,}',
+                'Safety_Stock': '{:,}',
+                'Reorder_Point': '{:,}'
+            }), use_container_width=True)
+
+            st.markdown("#### 💡 Interpretation")
+            st.success(f"""
+            **For Category A critical parts:**
+            - **Average EOQ:** {eoq_df['EOQ'].mean():,.0f} units per order
+            - **Average Safety Stock:** {eoq_df['Safety_Stock'].mean():,.0f} units as buffer
+            - **Action:** When stock drops to reorder point, place order for EOQ quantity
+            - **Benefit:** Optimizes ordering frequency and reduces inventory carrying costs
+            """)
+
         # Procurement recommendations
         st.markdown("### 💡 AI-Powered Procurement Recommendations")
 
@@ -703,16 +791,373 @@ class IFBServiceForecasting:
         {parts_usage.head(5).to_string()}
 
         Provide:
-        1. Inventory stocking recommendations for each ABC category
-        2. Reorder point suggestions for top parts
-        3. Safety stock recommendations
-        4. Distribution strategy across locations
-        5. Cost optimization opportunities
+        1. Inventory stocking strategy for each ABC category
+        2. Vendor management recommendations for Category A parts
+        3. Cost reduction opportunities through consolidation
+        4. Distribution strategy across service locations
+        5. Risk mitigation for supply chain disruptions
         """
 
         with st.spinner("Generating procurement insights..."):
             insights = self.llm.conversational_response([{'sender': 'user', 'text': procurement_prompt}])['text']
         st.write(insights)
+
+    def service_attribute_correlation_analysis(self):
+        """Analyze correlation between failures, machine status, and service attributes"""
+        st.markdown("### 🔍 Advanced Correlation Analysis")
+        st.markdown("""
+        **This section identifies:**
+        - **Where products are used** (machine status, location patterns)
+        - **Why failures occur** (correlation with service types, warranty status)
+        - **Whether service coverage explains behavior** (AMC vs EW vs LMC patterns)
+        """)
+
+        # Machine Status Analysis
+        if 'Machine_Status' in self.data.columns or any('machine' in col.lower() for col in self.data.columns):
+            machine_col = 'Machine_Status' if 'Machine_Status' in self.data.columns else [col for col in self.data.columns if 'machine' in col.lower()][0]
+
+            st.markdown("#### 🖥️ Machine Status vs Service Demand")
+
+            machine_analysis = self.data.groupby(machine_col).agg({
+                'Service_ID': 'count' if 'Service_ID' in self.data.columns else lambda x: len(x),
+                'Parts_Used': 'sum' if 'Parts_Used' in self.data.columns else lambda x: 0,
+                'Service_Revenue': 'sum' if 'Service_Revenue' in self.data.columns else lambda x: 0,
+                'Warranty_Claim': 'sum' if 'Warranty_Claim' in self.data.columns else lambda x: 0
+            }).reset_index()
+
+            machine_analysis.columns = [machine_col, 'Service_Calls', 'Parts_Used', 'Revenue', 'Warranty_Claims']
+
+            if len(machine_analysis) > 0:
+                machine_analysis['Avg_Parts_per_Service'] = machine_analysis['Parts_Used'] / machine_analysis['Service_Calls']
+                machine_analysis['Warranty_Rate'] = (machine_analysis['Warranty_Claims'] / machine_analysis['Service_Calls'] * 100)
+
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    fig = px.bar(machine_analysis, x=machine_col, y='Service_Calls',
+                               title='Service Volume by Machine Status',
+                               color='Warranty_Rate',
+                               color_continuous_scale='Reds',
+                               labels={machine_col: 'Machine Status', 'Service_Calls': 'Service Calls'})
+                    st.plotly_chart(fig, use_container_width=True)
+
+                with col2:
+                    fig = px.scatter(machine_analysis, x='Service_Calls', y='Avg_Parts_per_Service',
+                                   size='Revenue', color=machine_col,
+                                   title='Service Intensity vs Parts Consumption',
+                                   labels={'Avg_Parts_per_Service': 'Avg Parts per Service'})
+                    st.plotly_chart(fig, use_container_width=True)
+
+                st.dataframe(machine_analysis.style.format({
+                    'Service_Calls': '{:,}',
+                    'Parts_Used': '{:,}',
+                    'Revenue': '₹{:,.2f}',
+                    'Warranty_Claims': '{:,}',
+                    'Avg_Parts_per_Service': '{:.2f}',
+                    'Warranty_Rate': '{:.2f}%'
+                }), use_container_width=True)
+
+                # AI Insights on machine status correlation
+                st.markdown("#### 🤖 AI Insights - Machine Status Impact")
+                worst_status = machine_analysis.nlargest(1, 'Avg_Parts_per_Service').iloc[0]
+
+                machine_prompt = f"""
+                Analyze this machine status vs service demand correlation for IFB:
+
+                Machine Status with highest parts consumption: {worst_status[machine_col]}
+                - Service Calls: {worst_status['Service_Calls']:,}
+                - Average Parts per Service: {worst_status['Avg_Parts_per_Service']:.2f}
+                - Warranty Claim Rate: {worst_status['Warranty_Rate']:.2f}%
+                - Total Revenue: ₹{worst_status['Revenue']:,.2f}
+
+                Full breakdown:
+                {machine_analysis.to_string()}
+
+                Provide insights on:
+                1. What does this machine status pattern reveal about product usage and failure modes?
+                2. Why are certain machine statuses associated with higher parts consumption?
+                3. Recommended actions to reduce service costs for high-consumption statuses
+                4. Preventive maintenance strategies based on these patterns
+                """
+
+                with st.spinner("Analyzing machine status patterns..."):
+                    insights = self.llm.conversational_response([{'sender': 'user', 'text': machine_prompt}])['text']
+                st.write(insights)
+
+        # Service Type Analysis (AMC, EW, LMC, etc.)
+        if 'Service_Type' in self.data.columns:
+            st.markdown("#### 🛡️ Service Coverage Type Analysis")
+
+            service_type_analysis = self.data.groupby('Service_Type').agg({
+                'Service_ID': 'count' if 'Service_ID' in self.data.columns else lambda x: len(x),
+                'Parts_Used': 'sum' if 'Parts_Used' in self.data.columns else lambda x: 0,
+                'Service_Revenue': 'sum' if 'Service_Revenue' in self.data.columns else lambda x: 0,
+                'Parts_Revenue': 'sum' if 'Parts_Revenue' in self.data.columns else lambda x: 0,
+                'Warranty_Claim': 'sum' if 'Warranty_Claim' in self.data.columns else lambda x: 0
+            }).reset_index()
+
+            service_type_analysis.columns = ['Service_Type', 'Service_Calls', 'Parts_Used', 'Service_Revenue', 'Parts_Revenue', 'Warranty_Claims']
+
+            if len(service_type_analysis) > 0:
+                service_type_analysis['Warranty_Rate'] = (service_type_analysis['Warranty_Claims'] / service_type_analysis['Service_Calls'] * 100)
+                service_type_analysis['Parts_Revenue_Ratio'] = (service_type_analysis['Parts_Revenue'] / service_type_analysis['Service_Revenue'] * 100)
+
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    fig = px.pie(service_type_analysis, values='Service_Calls', names='Service_Type',
+                               title='Service Call Distribution by Type')
+                    st.plotly_chart(fig, use_container_width=True)
+
+                with col2:
+                    fig = px.bar(service_type_analysis, x='Service_Type', y=['Service_Revenue', 'Parts_Revenue'],
+                               title='Revenue Breakdown by Service Type',
+                               labels={'value': 'Revenue (₹)', 'variable': 'Revenue Type'},
+                               barmode='group')
+                    st.plotly_chart(fig, use_container_width=True)
+
+                st.dataframe(service_type_analysis.style.format({
+                    'Service_Calls': '{:,}',
+                    'Parts_Used': '{:,}',
+                    'Service_Revenue': '₹{:,.2f}',
+                    'Parts_Revenue': '₹{:,.2f}',
+                    'Warranty_Claims': '{:,}',
+                    'Warranty_Rate': '{:.2f}%',
+                    'Parts_Revenue_Ratio': '{:.2f}%'
+                }), use_container_width=True)
+
+                st.markdown("#### 📊 Service Type Insights")
+
+                # Identify patterns
+                amc_data = service_type_analysis[service_type_analysis['Service_Type'].str.contains('AMC', case=False, na=False)]
+                ew_data = service_type_analysis[service_type_analysis['Service_Type'].str.contains('EW|EXTENDED', case=False, na=False)]
+
+                insights = []
+                if not amc_data.empty:
+                    amc_warranty_rate = amc_data['Warranty_Rate'].mean()
+                    insights.append(f"**AMC Services:** {amc_warranty_rate:.1f}% warranty claim rate - {'HIGH (requires investigation)' if amc_warranty_rate > 15 else 'Normal'}")
+
+                if not ew_data.empty:
+                    ew_parts_ratio = ew_data['Parts_Revenue_Ratio'].mean()
+                    insights.append(f"**Extended Warranty:** {ew_parts_ratio:.1f}% parts revenue ratio - {'Profitable' if ew_parts_ratio < 40 else 'Review pricing'}")
+
+                if insights:
+                    for insight in insights:
+                        st.info(insight)
+
+                # AI-generated service type recommendations
+                service_type_prompt = f"""
+                Analyze service type performance for IFB service ecosystem:
+
+                {service_type_analysis.to_string()}
+
+                Provide:
+                1. Which service types (AMC/EW/LMC) are most profitable and why?
+                2. Are warranty claim patterns indicating coverage abuse or genuine quality issues?
+                3. Recommended pricing adjustments for each service type
+                4. Cross-sell opportunities (e.g., converting pay-per-service to AMC)
+                5. Service type portfolio optimization strategy
+                """
+
+                st.markdown("#### 🤖 AI Service Coverage Recommendations")
+                with st.spinner("Analyzing service type patterns..."):
+                    service_insights = self.llm.conversational_response([{'sender': 'user', 'text': service_type_prompt}])['text']
+                st.write(service_insights)
+
+        st.markdown("---")
+
+    def product_location_intelligence(self):
+        """Product and location intelligence with delivery delay analysis"""
+        st.markdown("### 📍 Product & Location Intelligence")
+        st.markdown("""
+        **This section identifies:**
+        - **Most ordered products** and their demand patterns
+        - **High-demand locations** and regional trends
+        - **Delivery delays** and their impact on operations
+        - **Location-specific patterns** in product consumption
+        """)
+
+        date_col = self.get_date_column()
+
+        # Most ordered products
+        if 'Product_Category' in self.data.columns:
+            st.markdown("#### 🏆 Most Ordered Products")
+
+            product_demand = self.data.groupby('Product_Category').agg({
+                'Service_ID': 'count' if 'Service_ID' in self.data.columns else lambda x: len(x),
+                'Parts_Used': 'sum' if 'Parts_Used' in self.data.columns else lambda x: 0,
+                'Service_Revenue': 'sum' if 'Service_Revenue' in self.data.columns else lambda x: 0
+            }).reset_index()
+
+            product_demand.columns = ['Product', 'Service_Calls', 'Parts_Used', 'Revenue']
+            product_demand = product_demand.sort_values('Service_Calls', ascending=False).head(10)
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                fig = px.bar(product_demand, x='Product', y='Service_Calls',
+                           title='Top 10 Products by Service Demand',
+                           color='Service_Calls',
+                           color_continuous_scale='Blues')
+                fig.update_xaxes(tickangle=45)
+                st.plotly_chart(fig, use_container_width=True)
+
+            with col2:
+                fig = px.treemap(product_demand, path=['Product'], values='Revenue',
+                               title='Revenue Distribution by Product')
+                st.plotly_chart(fig, use_container_width=True)
+
+            st.dataframe(product_demand.style.format({
+                'Service_Calls': '{:,}',
+                'Parts_Used': '{:,}',
+                'Revenue': '₹{:,.2f}'
+            }).background_gradient(cmap='Blues', subset=['Service_Calls']), use_container_width=True)
+
+        # High-demand locations
+        if 'Location' in self.data.columns or 'Branch' in self.data.columns:
+            location_col = 'Location' if 'Location' in self.data.columns else 'Branch'
+
+            st.markdown("#### 🌍 High-Demand Locations")
+
+            location_demand = self.data.groupby(location_col).agg({
+                'Service_ID': 'count' if 'Service_ID' in self.data.columns else lambda x: len(x),
+                'Service_Revenue': 'sum' if 'Service_Revenue' in self.data.columns else lambda x: 0,
+                'Parts_Used': 'sum' if 'Parts_Used' in self.data.columns else lambda x: 0
+            }).reset_index()
+
+            location_demand.columns = ['Location', 'Service_Calls', 'Revenue', 'Parts_Used']
+            location_demand['Revenue_per_Call'] = location_demand['Revenue'] / location_demand['Service_Calls']
+            location_demand = location_demand.sort_values('Service_Calls', ascending=False).head(15)
+
+            fig = px.scatter(location_demand, x='Service_Calls', y='Revenue_per_Call',
+                           size='Parts_Used', color='Location',
+                           title='Location Performance Matrix',
+                           labels={
+                               'Service_Calls': 'Service Volume',
+                               'Revenue_per_Call': 'Revenue per Service Call (₹)',
+                               'Parts_Used': 'Parts Consumption'
+                           },
+                           hover_data=['Location', 'Service_Calls', 'Revenue'])
+            st.plotly_chart(fig, use_container_width=True)
+
+        # Delivery delay analysis
+        if date_col and 'Service_Date' in self.data.columns:
+            # Check for ETA or delivery date columns
+            eta_col = None
+            for col in self.data.columns:
+                if 'eta' in col.lower() or 'delivery' in col.lower() or 'completion' in col.lower():
+                    eta_col = col
+                    break
+
+            if eta_col:
+                st.markdown("#### ⏱️ Delivery Delay Analysis")
+
+                # Calculate delays
+                delay_data = self.data.copy()
+                delay_data['Service_Date_dt'] = pd.to_datetime(delay_data['Service_Date'], errors='coerce')
+                delay_data['ETA_dt'] = pd.to_datetime(delay_data[eta_col], errors='coerce')
+                delay_data['Delay_Days'] = (delay_data['Service_Date_dt'] - delay_data['ETA_dt']).dt.days
+
+                # Filter valid delays
+                delay_data = delay_data[delay_data['Delay_Days'].notna()]
+
+                if len(delay_data) > 0:
+                    # Overall delay metrics
+                    col1, col2, col3, col4 = st.columns(4)
+
+                    delayed_services = len(delay_data[delay_data['Delay_Days'] > 0])
+                    on_time_services = len(delay_data[delay_data['Delay_Days'] <= 0])
+                    avg_delay = delay_data[delay_data['Delay_Days'] > 0]['Delay_Days'].mean() if delayed_services > 0 else 0
+                    max_delay = delay_data['Delay_Days'].max()
+
+                    col1.metric("Total Services", f"{len(delay_data):,}")
+                    col2.metric("Delayed Services", f"{delayed_services:,}", delta=f"{(delayed_services/len(delay_data)*100):.1f}%", delta_color="inverse")
+                    col3.metric("On-Time Services", f"{on_time_services:,}", delta=f"{(on_time_services/len(delay_data)*100):.1f}%")
+                    col4.metric("Avg Delay", f"{avg_delay:.1f} days")
+
+                    # Products affected by delays
+                    if 'Product_Category' in delay_data.columns:
+                        st.markdown("##### 📦 Products Most Affected by Delays")
+
+                        product_delays = delay_data[delay_data['Delay_Days'] > 0].groupby('Product_Category').agg({
+                            'Service_ID': 'count' if 'Service_ID' in delay_data.columns else lambda x: len(x),
+                            'Delay_Days': 'mean'
+                        }).reset_index()
+
+                        product_delays.columns = ['Product', 'Delayed_Services', 'Avg_Delay_Days']
+                        product_delays = product_delays.sort_values('Delayed_Services', ascending=False).head(10)
+
+                        fig = px.bar(product_delays, x='Product', y='Delayed_Services',
+                                   color='Avg_Delay_Days',
+                                   title='Top 10 Products by Delay Frequency',
+                                   color_continuous_scale='Reds',
+                                   labels={'Delayed_Services': 'Number of Delayed Services'})
+                        fig.update_xaxes(tickangle=45)
+                        st.plotly_chart(fig, use_container_width=True)
+
+                    # Location-specific delays
+                    if location_col in delay_data.columns:
+                        st.markdown("##### 🌍 Location-Specific Delay Patterns")
+
+                        location_delays = delay_data[delay_data['Delay_Days'] > 0].groupby(location_col).agg({
+                            'Service_ID': 'count' if 'Service_ID' in delay_data.columns else lambda x: len(x),
+                            'Delay_Days': ['mean', 'max']
+                        }).reset_index()
+
+                        location_delays.columns = ['Location', 'Delayed_Count', 'Avg_Delay', 'Max_Delay']
+                        location_delays['On_Time_Rate'] = 100 - (location_delays['Delayed_Count'] / delay_data.groupby(location_col).size().values * 100)
+                        location_delays = location_delays.sort_values('Delayed_Count', ascending=False).head(10)
+
+                        col1, col2 = st.columns(2)
+
+                        with col1:
+                            fig = px.bar(location_delays, x='Location', y='Delayed_Count',
+                                       title='Locations with Most Delays',
+                                       color='Avg_Delay',
+                                       color_continuous_scale='Oranges')
+                            fig.update_xaxes(tickangle=45)
+                            st.plotly_chart(fig, use_container_width=True)
+
+                        with col2:
+                            st.dataframe(location_delays.style.format({
+                                'Delayed_Count': '{:,}',
+                                'Avg_Delay': '{:.1f} days',
+                                'Max_Delay': '{:.0f} days',
+                                'On_Time_Rate': '{:.1f}%'
+                            }).background_gradient(cmap='Reds', subset=['Avg_Delay']), use_container_width=True)
+
+                    # AI Insights on delays
+                    st.markdown("#### 🤖 AI Delay Impact Analysis")
+
+                    delay_prompt = f"""
+                    Analyze delivery delay patterns for IFB service operations:
+
+                    Total Services: {len(delay_data):,}
+                    Delayed Services: {delayed_services:,} ({(delayed_services/len(delay_data)*100):.1f}%)
+                    Average Delay: {avg_delay:.1f} days
+                    Maximum Delay: {max_delay:.0f} days
+
+                    Products most affected:
+                    {product_delays.to_string() if 'Product_Category' in delay_data.columns else 'Data not available'}
+
+                    Provide insights on:
+                    1. What are the business implications of these delay patterns?
+                    2. Which products or locations should be prioritized for improvement?
+                    3. Root causes of delays (supply chain, logistics, inventory management)?
+                    4. Recommended actions to reduce delays by 50% in next 90 days
+                    5. Impact on customer satisfaction and retention
+                    """
+
+                    with st.spinner("Analyzing delay patterns..."):
+                        delay_insights = self.llm.conversational_response([{'sender': 'user', 'text': delay_prompt}])['text']
+                    st.write(delay_insights)
+
+                else:
+                    st.info("No delay data available for analysis")
+            else:
+                st.info("No delivery/ETA date column found for delay analysis")
+
+        st.markdown("---")
 
     def warranty_claims_analysis(self):
         """Warranty claims analysis and forecasting"""

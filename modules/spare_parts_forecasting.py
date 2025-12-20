@@ -803,7 +803,11 @@ class SparePartsForecastingEngine:
         else:
             df["warranty_flag"] = False
 
-        # 4. Stock mismatch
+        # 4. Stock mismatch: Identifies gaps between ordered quantity (indent) and consumed quantity
+        # Mismatch occurs when:
+        # - Parts consumed without prior indent approval (demand_gap < 0)
+        # - Ordered parts not used in service (demand_gap > 0)
+        # Business impact: Inventory process gaps, unauthorized part usage, or forecast inaccuracy
         df["stock_mismatch_flag"] = abs(df.get("demand_gap", 0).fillna(0)) > 0
 
         # Aggregate by branch
@@ -827,11 +831,17 @@ class SparePartsForecastingEngine:
                 "unique_jobs",
             ]
 
+            # Calculate weighted revenue leakage score (0-1 scale)
+            # Formula: 30% excess consumption + 40% repeat failures + 20% warranty + 10% stock mismatch
+            # Score interpretation:
+            #   0.0-0.3: Low risk (routine monitoring)
+            #   0.3-0.5: Medium risk (high priority)
+            #   0.5-1.0: High risk (critical - immediate action required)
             branch_leakage["revenue_leakage_score"] = (
-                branch_leakage["excess_consumption_rate"] * 0.3
-                + branch_leakage["repeat_failure_rate"] * 0.4
-                + branch_leakage["warranty_rate"] * 0.2
-                + branch_leakage["stock_mismatch_rate"] * 0.1
+                branch_leakage["excess_consumption_rate"] * 0.3  # Weight: 30% - Abnormal consumption volatility
+                + branch_leakage["repeat_failure_rate"] * 0.4   # Weight: 40% - Multiple parts per job (highest impact)
+                + branch_leakage["warranty_rate"] * 0.2          # Weight: 20% - Warranty/AMC claims
+                + branch_leakage["stock_mismatch_rate"] * 0.1    # Weight: 10% - Order vs consumption gap
             )
 
             branch_leakage = branch_leakage.sort_values("revenue_leakage_score", ascending=False)
@@ -891,11 +901,14 @@ class SparePartsForecastingEngine:
                 "unique_jobs",
             ]
 
+            # Calculate spare part risk score (0-1 scale)
+            # Same weighted formula as branch leakage score
+            # Higher score = higher risk = needs immediate attention
             spare_leakage["risk_score"] = (
-                spare_leakage["excess_consumption_rate"] * 0.3
-                + spare_leakage["repeat_failure_rate"] * 0.4
-                + spare_leakage["warranty_rate"] * 0.2
-                + spare_leakage["stock_mismatch_rate"] * 0.1
+                spare_leakage["excess_consumption_rate"] * 0.3  # Consumption volatility
+                + spare_leakage["repeat_failure_rate"] * 0.4   # Repeat replacements (quality/diagnostic issues)
+                + spare_leakage["warranty_rate"] * 0.2          # Warranty claims
+                + spare_leakage["stock_mismatch_rate"] * 0.1    # Inventory process gaps
             )
 
             high_risk_spares = spare_leakage.nlargest(20, "risk_score")
@@ -999,9 +1012,22 @@ class SparePartsForecastingEngine:
                 )
 
         if forecast_confidence == "Low":
-            top_risks_list.append(
-                "Low forecast confidence due to wide confidence intervals or insufficient historical data"
-            )
+            # Provide specific explanation for low confidence
+            if self.forecast_30_60_90 is not None and not self.forecast_30_60_90.empty:
+                avg_data_points = len(self.normalized_clean_data) / self.forecast_30_60_90['part_id'].nunique() if 'part_id' in self.forecast_30_60_90.columns else 0
+                avg_std = self.forecast_30_60_90['historical_std_demand'].mean() if 'historical_std_demand' in self.forecast_30_60_90.columns else 0
+                avg_forecast = self.forecast_30_60_90['forecast_demand'].mean()
+
+                if avg_data_points < 90:  # Less than 3 months
+                    confidence_reason = f"Insufficient historical data (avg {avg_data_points:.0f} data points per part, need 90+ for high confidence)"
+                elif avg_std / avg_forecast > 0.8 if avg_forecast > 0 else True:
+                    confidence_reason = "High demand variance indicating inconsistent consumption patterns"
+                else:
+                    confidence_reason = "Wide confidence intervals from volatile demand or sparse data"
+            else:
+                confidence_reason = "Insufficient historical data for reliable forecasting"
+
+            top_risks_list.append(f"Low forecast confidence: {confidence_reason}")
 
         top_risks = top_risks_list[:3] if len(top_risks_list) >= 3 else top_risks_list
         if not top_risks:
