@@ -742,9 +742,8 @@ class SparePartsForecastingEngine:
 
         self.forecast_30_60_90 = forecast_df
 
-        # Auto-generate demand insights if LLM available
-        if self.llm:
-            self.generate_demand_insights()
+        # ALWAYS generate demand insights (uses deterministic fallback if no LLM)
+        self.generate_demand_insights()
 
         return forecast_df
 
@@ -845,6 +844,29 @@ class SparePartsForecastingEngine:
             )
 
             branch_leakage = branch_leakage.sort_values("revenue_leakage_score", ascending=False)
+
+            # Enrich with branch names for better interpretability
+            branch_name_col = self.canonical_fields.get("branch_name")
+            branch_ref_col = self.canonical_fields.get("branch_code_ref")
+            if (
+                self.branches_df is not None
+                and branch_name_col
+                and branch_ref_col
+                and branch_ref_col in self.branches_df.columns
+                and branch_name_col in self.branches_df.columns
+            ):
+                branch_leakage = pd.merge(
+                    branch_leakage,
+                    self.branches_df[[branch_ref_col, branch_name_col]],
+                    left_on=branch_col,
+                    right_on=branch_ref_col,
+                    how="left"
+                )
+                # Reorder columns to show name first if available
+                if branch_name_col in branch_leakage.columns:
+                    cols = list(branch_leakage.columns)
+                    cols.remove(branch_name_col)
+                    branch_leakage = branch_leakage[[branch_name_col] + cols]
         else:
             branch_leakage = pd.DataFrame()
 
@@ -877,6 +899,29 @@ class SparePartsForecastingEngine:
             )
 
             franchise_leakage = franchise_leakage.sort_values("revenue_leakage_score", ascending=False)
+
+            # Enrich with franchise names for better interpretability
+            franchise_name_col = self.canonical_fields.get("franchise_name")
+            franchise_ref_col = self.canonical_fields.get("franchise_code_ref")
+            if (
+                self.franchises_df is not None
+                and franchise_name_col
+                and franchise_ref_col
+                and franchise_ref_col in self.franchises_df.columns
+                and franchise_name_col in self.franchises_df.columns
+            ):
+                franchise_leakage = pd.merge(
+                    franchise_leakage,
+                    self.franchises_df[[franchise_ref_col, franchise_name_col]],
+                    left_on=franchise_col,
+                    right_on=franchise_ref_col,
+                    how="left"
+                )
+                # Reorder columns to show name first if available
+                if franchise_name_col in franchise_leakage.columns:
+                    cols = list(franchise_leakage.columns)
+                    cols.remove(franchise_name_col)
+                    franchise_leakage = franchise_leakage[[franchise_name_col] + cols]
         else:
             franchise_leakage = pd.DataFrame()
 
@@ -921,10 +966,9 @@ class SparePartsForecastingEngine:
         self.franchise_leakage_summary = franchise_leakage
         self.top_20_high_risk_spares = high_risk_spares
 
-        # Auto-generate leakage insights if LLM available
-        if self.llm:
-            self.generate_leakage_insights()
-            self.generate_spare_part_insights()
+        # ALWAYS generate leakage insights (uses deterministic explanations with or without LLM)
+        self.generate_leakage_insights()
+        self.generate_spare_part_insights()
 
         return branch_leakage, franchise_leakage, high_risk_spares
 
@@ -1455,6 +1499,368 @@ class SparePartsForecastingEngine:
         self.spare_part_insights = narratives
         logger.info(f"Generated {len(narratives)} high-risk spare part narratives")
         return narratives
+
+    # ----------------------------
+    # Advanced Correlation Analysis
+    # ----------------------------
+    def analyze_machine_status_correlations(self) -> pd.DataFrame:
+        """
+        Analyze correlation between machine status and spare parts consumption.
+
+        Identifies:
+        - Which machine statuses drive highest part consumption
+        - Part consumption intensity by machine status
+        - Correlation between machine status and failure patterns
+
+        Returns:
+            DataFrame with machine status analysis
+        """
+        logger.info("Analyzing machine status correlations...")
+
+        if self.normalized_clean_data is None or self.normalized_clean_data.empty:
+            logger.warning("No data available for machine status analysis")
+            return pd.DataFrame()
+
+        df = self.normalized_clean_data.copy()
+
+        # Resolve column names
+        machine_status_col = None
+        if self.canonical_fields.get("consumed_machine_status"):
+            try:
+                machine_status_col = resolve_column_after_merge(df, self.canonical_fields.get("consumed_machine_status"))
+            except SchemaInferenceError:
+                logger.warning("Machine status column not found")
+                return pd.DataFrame()
+        else:
+            logger.warning("Machine status field not in canonical schema")
+            return pd.DataFrame()
+
+        if machine_status_col not in df.columns:
+            logger.warning(f"Machine status column {machine_status_col} not in data")
+            return pd.DataFrame()
+
+        part_col = resolve_column_after_merge(df, self.canonical_fields.get("consumed_consumed_part_id"))
+        job_col = resolve_column_after_merge(df, self.canonical_fields.get("consumed_job_id"))
+
+        # Aggregate by machine status
+        machine_analysis = df.groupby(machine_status_col).agg({
+            "consumed_qty": "sum",
+            part_col: "count",
+            job_col: "nunique",
+            "repeat_failure_flag": "mean" if "repeat_failure_flag" in df.columns else lambda x: 0,
+            "warranty_flag": "mean" if "warranty_flag" in df.columns else lambda x: 0,
+        }).reset_index()
+
+        machine_analysis.columns = [
+            machine_status_col,
+            "total_parts_consumed",
+            "part_transactions",
+            "unique_jobs",
+            "repeat_failure_rate",
+            "warranty_rate",
+        ]
+
+        # Calculate parts per job (consumption intensity)
+        machine_analysis["parts_per_job"] = (
+            machine_analysis["total_parts_consumed"] / machine_analysis["unique_jobs"]
+        ).fillna(0)
+
+        machine_analysis = machine_analysis.sort_values("parts_per_job", ascending=False)
+
+        logger.info(f"Analyzed {len(machine_analysis)} machine status categories")
+        return machine_analysis
+
+    def analyze_process_type_correlations(self) -> pd.DataFrame:
+        """
+        Analyze correlation between process types (AMC, EW, LMC, etc.) and consumption patterns.
+
+        Identifies:
+        - Which service types consume most parts
+        - Warranty claim patterns by process type
+        - Profitability indicators by service coverage type
+
+        Returns:
+            DataFrame with process type analysis
+        """
+        logger.info("Analyzing process type correlations...")
+
+        if self.normalized_clean_data is None or self.normalized_clean_data.empty:
+            logger.warning("No data available for process type analysis")
+            return pd.DataFrame()
+
+        df = self.normalized_clean_data.copy()
+
+        # Resolve column names
+        process_col = None
+        if self.canonical_fields.get("consumed_process_type"):
+            try:
+                process_col = resolve_column_after_merge(df, self.canonical_fields.get("consumed_process_type"))
+            except SchemaInferenceError:
+                logger.warning("Process type column not found")
+                return pd.DataFrame()
+        else:
+            logger.warning("Process type field not in canonical schema")
+            return pd.DataFrame()
+
+        if process_col not in df.columns:
+            logger.warning(f"Process type column {process_col} not in data")
+            return pd.DataFrame()
+
+        part_col = resolve_column_after_merge(df, self.canonical_fields.get("consumed_consumed_part_id"))
+        job_col = resolve_column_after_merge(df, self.canonical_fields.get("consumed_job_id"))
+
+        # Aggregate by process type
+        process_analysis = df.groupby(process_col).agg({
+            "consumed_qty": "sum",
+            job_col: "nunique",
+            "repeat_failure_flag": "mean" if "repeat_failure_flag" in df.columns else lambda x: 0,
+            "warranty_flag": "mean" if "warranty_flag" in df.columns else lambda x: 0,
+            "excess_consumption_flag": "mean" if "excess_consumption_flag" in df.columns else lambda x: 0,
+        }).reset_index()
+
+        process_analysis.columns = [
+            process_col,
+            "total_parts_consumed",
+            "unique_jobs",
+            "repeat_failure_rate",
+            "warranty_claim_rate",
+            "excess_consumption_rate",
+        ]
+
+        # Calculate consumption intensity
+        process_analysis["parts_per_job"] = (
+            process_analysis["total_parts_consumed"] / process_analysis["unique_jobs"]
+        ).fillna(0)
+
+        # Identify high-risk process types
+        process_analysis["risk_indicator"] = (
+            process_analysis["repeat_failure_rate"] * 0.4 +
+            process_analysis["warranty_claim_rate"] * 0.3 +
+            process_analysis["excess_consumption_rate"] * 0.3
+        )
+
+        process_analysis = process_analysis.sort_values("risk_indicator", ascending=False)
+
+        logger.info(f"Analyzed {len(process_analysis)} process types")
+        return process_analysis
+
+    # ----------------------------
+    # Product & Location Intelligence
+    # ----------------------------
+    def analyze_product_location_intelligence(self) -> Dict[str, pd.DataFrame]:
+        """
+        Comprehensive product and location intelligence analysis.
+
+        Identifies:
+        - Most ordered products and their demand patterns
+        - High-demand locations and regional trends
+        - Delivery delays and affected products
+        - Location-specific consumption patterns
+
+        Returns:
+            Dictionary containing multiple analysis dataframes
+        """
+        logger.info("Analyzing product and location intelligence...")
+
+        if self.normalized_clean_data is None or self.normalized_clean_data.empty:
+            logger.warning("No data available for product/location analysis")
+            return {}
+
+        df = self.normalized_clean_data.copy()
+        results = {}
+
+        # Get column references
+        part_col = resolve_column_after_merge(df, self.canonical_fields.get("consumed_consumed_part_id"))
+        date_col = resolve_column_after_merge(df, self.canonical_fields.get("consumed_posting_date"))
+
+        branch_col = None
+        if self.canonical_fields.get("consumed_branch_code"):
+            try:
+                branch_col = resolve_column_after_merge(df, self.canonical_fields.get("consumed_branch_code"))
+            except SchemaInferenceError:
+                pass
+
+        # 1. Most ordered products
+        if part_col in df.columns:
+            product_demand = df.groupby(part_col).agg({
+                "consumed_qty": "sum",
+                "repeat_failure_flag": "mean" if "repeat_failure_flag" in df.columns else lambda x: 0,
+                "warranty_flag": "mean" if "warranty_flag" in df.columns else lambda x: 0,
+            }).reset_index()
+
+            product_demand.columns = [part_col, "total_consumption", "repeat_failure_rate", "warranty_rate"]
+            product_demand = product_demand.sort_values("total_consumption", ascending=False).head(20)
+            results["top_products"] = product_demand
+
+        # 2. High-demand locations
+        if branch_col and branch_col in df.columns:
+            location_demand = df.groupby(branch_col).agg({
+                "consumed_qty": "sum",
+                part_col: "nunique",
+                "repeat_failure_flag": "mean" if "repeat_failure_flag" in df.columns else lambda x: 0,
+            }).reset_index()
+
+            location_demand.columns = [branch_col, "total_consumption", "unique_parts", "repeat_failure_rate"]
+
+            # Enrich with branch names
+            branch_name_col = self.canonical_fields.get("branch_name")
+            branch_ref_col = self.canonical_fields.get("branch_code_ref")
+            if (
+                self.branches_df is not None
+                and branch_name_col
+                and branch_ref_col
+                and branch_ref_col in self.branches_df.columns
+                and branch_name_col in self.branches_df.columns
+            ):
+                location_demand = pd.merge(
+                    location_demand,
+                    self.branches_df[[branch_ref_col, branch_name_col]],
+                    left_on=branch_col,
+                    right_on=branch_ref_col,
+                    how="left"
+                )
+
+            location_demand = location_demand.sort_values("total_consumption", ascending=False).head(15)
+            results["top_locations"] = location_demand
+
+        # 3. Delivery delay analysis
+        posting_col = self.canonical_fields.get("indent_posting_date")
+        eta_col = self.canonical_fields.get("indent_eta_date")
+
+        if posting_col and eta_col:
+            try:
+                posting_actual = resolve_column_after_merge(df, posting_col)
+                eta_actual = resolve_column_after_merge(df, eta_col)
+
+                if posting_actual in df.columns and eta_actual in df.columns:
+                    delay_df = df.copy()
+                    delay_df["posting_dt"] = pd.to_datetime(delay_df[posting_actual], errors="coerce")
+                    delay_df["eta_dt"] = pd.to_datetime(delay_df[eta_actual], errors="coerce")
+                    delay_df["delay_days"] = (delay_df["posting_dt"] - delay_df["eta_dt"]).dt.days
+
+                    delay_df = delay_df[delay_df["delay_days"].notna()]
+
+                    if not delay_df.empty:
+                        # Products most affected by delays
+                        product_delays = delay_df[delay_df["delay_days"] > 0].groupby(part_col).agg({
+                            "delay_days": ["mean", "count"],
+                            "consumed_qty": "sum"
+                        }).reset_index()
+
+                        product_delays.columns = [part_col, "avg_delay_days", "delayed_transactions", "total_consumption"]
+                        product_delays = product_delays.sort_values("delayed_transactions", ascending=False).head(10)
+                        results["delayed_products"] = product_delays
+
+                        # Location-specific delays
+                        if branch_col and branch_col in delay_df.columns:
+                            location_delays = delay_df[delay_df["delay_days"] > 0].groupby(branch_col).agg({
+                                "delay_days": ["mean", "max", "count"]
+                            }).reset_index()
+
+                            location_delays.columns = [branch_col, "avg_delay_days", "max_delay_days", "delayed_count"]
+                            location_delays = location_delays.sort_values("avg_delay_days", ascending=False).head(10)
+                            results["location_delays"] = location_delays
+            except SchemaInferenceError:
+                logger.warning("Delivery delay columns not available")
+
+        logger.info(f"Generated {len(results)} product/location intelligence reports")
+        return results
+
+    # ----------------------------
+    # Inventory Optimization
+    # ----------------------------
+    def calculate_eoq_safety_stock(self, top_n: int = 20) -> pd.DataFrame:
+        """
+        Calculate Economic Order Quantity (EOQ) and Safety Stock for top parts.
+
+        Uses standard EOQ formula and safety stock calculation for 95% service level.
+        Provides actionable inventory planning recommendations.
+
+        Args:
+            top_n: Number of top parts by consumption to analyze (default: 20)
+
+        Returns:
+            DataFrame with EOQ, safety stock, and reorder point for each part
+        """
+        logger.info(f"Calculating EOQ and safety stock for top {top_n} parts...")
+
+        if self.normalized_clean_data is None or self.normalized_clean_data.empty:
+            logger.warning("No data available for EOQ calculation")
+            return pd.DataFrame()
+
+        df = self.normalized_clean_data[self.normalized_clean_data["data_quality_flag"] == "clean"].copy()
+
+        if df.empty:
+            logger.warning("No clean data available for EOQ calculation")
+            return pd.DataFrame()
+
+        part_col = resolve_column_after_merge(df, self.canonical_fields.get("consumed_consumed_part_id"))
+
+        # Aggregate consumption by part
+        part_stats = df.groupby(part_col).agg({
+            "consumed_qty": ["sum", "std", "count"]
+        }).reset_index()
+
+        part_stats.columns = [part_col, "total_consumption", "consumption_std", "transaction_count"]
+
+        # Get top parts by consumption
+        part_stats = part_stats.nlargest(top_n, "total_consumption")
+
+        eoq_results = []
+
+        for idx, row in part_stats.iterrows():
+            part_id = row[part_col]
+            total_consumption = row["total_consumption"]
+            consumption_std = row["consumption_std"] if not pd.isna(row["consumption_std"]) else 0
+
+            # Annualize demand (assuming data covers multiple months)
+            # Estimate months covered
+            date_col = resolve_column_after_merge(df, self.canonical_fields.get("consumed_posting_date"))
+            part_dates = df[df[part_col] == part_id][date_col].dropna()
+
+            if len(part_dates) > 0:
+                date_range_days = (part_dates.max() - part_dates.min()).days
+                months_covered = max(date_range_days / 30.0, 1.0)
+                annual_demand = total_consumption * (12.0 / months_covered)
+            else:
+                annual_demand = total_consumption * 12  # Assume 1 month of data
+
+            # EOQ assumptions (can be customized per business)
+            ordering_cost = 500  # ₹ per order
+            holding_cost_rate = 0.25  # 25% of part cost per year
+            avg_part_cost = 100  # Default ₹100 (should be enriched from parts master)
+
+            # EOQ Formula: sqrt((2 * D * S) / H)
+            holding_cost_per_unit = avg_part_cost * holding_cost_rate
+
+            if holding_cost_per_unit > 0:
+                eoq = np.sqrt((2 * annual_demand * ordering_cost) / holding_cost_per_unit)
+            else:
+                eoq = 0
+
+            # Safety stock calculation (95% service level, Z = 1.65)
+            daily_demand = annual_demand / 365.0
+            demand_std_dev = consumption_std if consumption_std > 0 else daily_demand * 0.3  # Assume 30% CV
+            lead_time_days = 7  # Assume 7-day lead time
+            safety_stock = 1.65 * demand_std_dev * np.sqrt(lead_time_days)
+
+            # Reorder point = (demand during lead time) + safety stock
+            reorder_point = (daily_demand * lead_time_days) + safety_stock
+
+            eoq_results.append({
+                "part_id": part_id,
+                "annual_demand": int(annual_demand),
+                "monthly_demand": int(annual_demand / 12),
+                "eoq": int(eoq),
+                "safety_stock": int(safety_stock),
+                "reorder_point": int(reorder_point),
+                "demand_volatility_pct": (consumption_std / (total_consumption / row["transaction_count"]) * 100) if row["transaction_count"] > 0 else 0,
+            })
+
+        eoq_df = pd.DataFrame(eoq_results)
+
+        logger.info(f"Calculated EOQ for {len(eoq_df)} parts")
+        return eoq_df
 
     # ----------------------------
     # Full pipeline
